@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: movesure-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12
+      - key: PORT
+        value: 5000
+    healthCheckPath: /api/v1/endpoints
+    region: oregon
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+    disk:
+      name: movesure-data
+      sizeGB: 1
+      mountPath: /opt/render/project/src/data
+    # Environment variables for production
+    # Add your production environment variables here
+    # - key: API_KEY
+    #   value: your-api-key
+    # - key: SECRET_KEY
+    #   value: your-secret-key
+    
+# Optional: Database service (uncomment if needed)
+# databases:
+#   - name: movesure-db
+#     databaseName: movesure
+#     user: movesure
+#     plan: free
+#     region: oregon
