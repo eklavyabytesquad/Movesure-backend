@@ -2,7 +2,8 @@ from flask import Flask, jsonify, request
 from masters_auth import authenticate, get_token, force_refresh_token
 from services import (
     get_eway_bill_data_service, 
-    generate_eway_bill_service, 
+    generate_eway_bill_service,
+    generate_consolidated_eway_bill_service,
     start_background_services, 
     stop_services,
     get_service_status
@@ -106,6 +107,55 @@ def generate_eway_bill_api():
             "error": str(e)
         }), 500
 
+@app.route('/api/v1/generateconsolidatedeway', methods=['POST'])
+def generate_consolidated_eway_bill_api():
+    """API endpoint to generate consolidated E-way bill"""
+    try:
+        consolidated_data = request.get_json()
+        
+        if not consolidated_data:
+            return jsonify({
+                "status": "error",
+                "error": "No data provided"
+            }), 400
+        
+        logger.info(f"API Request: Generate Consolidated E-way Bill for GSTIN {consolidated_data.get('userGstin', 'Unknown')}")
+        
+        result = generate_consolidated_eway_bill_service(consolidated_data)
+        
+        if result["success"]:
+            response_data = result["data"]
+            consolidated_eway_bill_number = None
+            
+            # Extract consolidated E-way bill number from response
+            if "results" in response_data and "message" in response_data["results"]:
+                message = response_data["results"]["message"]
+                if isinstance(message, dict) and "consolidatedEwayBillNo" in message:
+                    consolidated_eway_bill_number = message["consolidatedEwayBillNo"]
+            
+            logger.info(f"Consolidated E-way Bill generated successfully: {consolidated_eway_bill_number}")
+            
+            return jsonify({
+                "status": "success",
+                "consolidated_eway_bill_number": consolidated_eway_bill_number,
+                "userGstin": consolidated_data.get('userGstin'),
+                "vehicle_number": consolidated_data.get('vehicle_number'),
+                "data": response_data
+            })
+        else:
+            logger.error(f"Failed to generate Consolidated E-way Bill: {result['error']}")
+            return jsonify({
+                "status": "error",
+                "error": result["error"]
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
 @app.route('/api/v1/generateewaybill/template', methods=['GET'])
 def get_eway_bill_template_api():
     """API endpoint to get E-way bill template"""
@@ -187,6 +237,11 @@ def list_endpoints():
                 "method": "POST",
                 "url": "/api/v1/generateewaybill",
                 "description": "Generate new E-way bill"
+            },
+            "generate_consolidated_eway": {
+                "method": "POST",
+                "url": "/api/v1/generateconsolidatedeway",
+                "description": "Generate consolidated E-way bill"
             },
             "get_template": {
                 "method": "GET",
