@@ -85,6 +85,23 @@ def generate_consolidated_eway_bill_service(consolidated_data):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def get_consolidated_eway_bill_service(consolidated_eway_bill_number, gstin="05AAABB0639G1Z8"):
+    """Service function to get consolidated E-way bill data (Trip Sheet)"""
+    base_url = "https://sandb-api.mastersindia.co/api/v1/getEwayBillData/"
+    url = f"{base_url}?action=GetTripSheet&gstin={gstin}&consolidated_eway_bill_number={consolidated_eway_bill_number}"
+    
+    try:
+        headers = authenticate()
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            return {"success": True, "data": response.json()}
+        else:
+            return {"success": False, "error": f"API Error {response.status_code}: {response.text}"}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def start_background_services():
     """Start background authentication service"""
     logger.info("Starting background authentication service")

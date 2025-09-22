@@ -4,6 +4,7 @@ from services import (
     get_eway_bill_data_service, 
     generate_eway_bill_service,
     generate_consolidated_eway_bill_service,
+    get_consolidated_eway_bill_service,
     start_background_services, 
     stop_services,
     get_service_status
@@ -156,6 +157,38 @@ def generate_consolidated_eway_bill_api():
             "error": str(e)
         }), 500
 
+@app.route('/api/v1/getconsolidatedewaybilldata/<consolidated_eway_bill_number>', methods=['GET'])
+def get_consolidated_eway_bill_api(consolidated_eway_bill_number):
+    """API endpoint to get consolidated E-way bill data (Trip Sheet)"""
+    try:
+        gstin = request.args.get('gstin', '05AAABB0639G1Z8')
+        logger.info(f"API Request: Get Consolidated E-way Bill {consolidated_eway_bill_number} for GSTIN {gstin}")
+        
+        result = get_consolidated_eway_bill_service(consolidated_eway_bill_number, gstin)
+        
+        if result["success"]:
+            logger.info(f"Consolidated E-way Bill {consolidated_eway_bill_number} retrieved successfully")
+            return jsonify({
+                "status": "success",
+                "consolidated_eway_bill_number": consolidated_eway_bill_number,
+                "gstin": gstin,
+                "data": result["data"]
+            })
+        else:
+            logger.error(f"Failed to retrieve Consolidated E-way Bill {consolidated_eway_bill_number}: {result['error']}")
+            return jsonify({
+                "status": "error",
+                "consolidated_eway_bill_number": consolidated_eway_bill_number,
+                "error": result["error"]
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
 @app.route('/api/v1/generateewaybill/template', methods=['GET'])
 def get_eway_bill_template_api():
     """API endpoint to get E-way bill template"""
@@ -232,6 +265,11 @@ def list_endpoints():
                 "method": "GET",
                 "url": "/api/v1/getewaybilldata/<eway_bill_number>",
                 "description": "Get E-way bill data by number"
+            },
+            "get_consolidated_eway_bill": {
+                "method": "GET",
+                "url": "/api/v1/getconsolidatedewaybilldata/<consolidated_eway_bill_number>",
+                "description": "Get consolidated E-way bill data (Trip Sheet)"
             },
             "generate_eway_bill": {
                 "method": "POST",
