@@ -17,6 +17,27 @@ from transporter_update_with_pdf_service import update_transporter_and_get_pdf
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
+@app.before_request
+def ensure_valid_token():
+    """
+    Middleware to ensure JWT token is valid before processing any request
+    Automatically refreshes token if expired
+    """
+    # Skip token check for health endpoint
+    if request.path == '/api/health':
+        return None
+    
+    # Check and refresh token if needed
+    token = load_jwt_token()
+    if not token:
+        print("⚠️ Token validation failed, attempting to refresh...")
+        token = get_jwt_token()
+        if not token:
+            return jsonify({
+                "status": "error",
+                "message": "Authentication failed. Unable to obtain valid JWT token."
+            }), 503
+
 @app.route('/api/ewaybill', methods=['GET'])
 def get_ewaybill():
     """
