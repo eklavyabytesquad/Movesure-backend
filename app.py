@@ -23,9 +23,11 @@ def ensure_valid_token():
     Middleware to ensure JWT token is valid before processing any request
     Automatically refreshes token if expired
     """
-    # Skip token check for health endpoint
-    if request.path == '/api/health':
+    # Skip token check for health endpoint and refresh-token endpoint
+    if request.path in ['/api/health', '/api/refresh-token']:
         return None
+    
+    print(f"🔍 Validating token for request: {request.method} {request.path}")
     
     # Check and refresh token if needed
     token = load_jwt_token()
@@ -33,10 +35,15 @@ def ensure_valid_token():
         print("⚠️ Token validation failed, attempting to refresh...")
         token = get_jwt_token()
         if not token:
+            print("❌ Failed to obtain valid token")
             return jsonify({
                 "status": "error",
                 "message": "Authentication failed. Unable to obtain valid JWT token."
             }), 503
+        else:
+            print("✅ Successfully obtained new token")
+    else:
+        print("✅ Token validated successfully")
 
 @app.route('/api/ewaybill', methods=['GET'])
 def get_ewaybill():
