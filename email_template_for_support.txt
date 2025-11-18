@@ -1,0 +1,326 @@
+
+Subject: Error 325 - Could not retrieve data for E-Way Bill API
+
+Dear MastersGST Support Team,
+
+I am experiencing Error 325 ("Could not retrieve data") when calling the GetEwayBill API endpoint.
+
+REQUEST DETAILS:
+----------------
+Method: GET
+URL: https://prod-api.mastersindia.co/api/v1/getEwayBillData/?action=GetEwayBill&gstin=09COVPS5556J1ZT&eway_bill_number=431646987772
+
+Headers:
+  Content-Type: application/json
+  Authorization: JWT <token>
+
+Query Parameters:
+  - action: GetEwayBill
+  - gstin: 09COVPS5556J1ZT
+  - eway_bill_number: 431646987772
+
+RESPONSE RECEIVED:
+-----------------
+Status Code: 200
+Response: {
+  "results": {
+    "message": {
+      "eway_bill_number": 431646987772,
+      "eway_bill_date": "15/11/2025 04:32:00 PM",
+      "generate_mode": "API",
+      "userGstin": "09AALCM9340H1Z2",
+      "supply_type": "OUTWARD",
+      "sub_supply_type": "Supply",
+      "document_type": "Tax Invoice",
+      "document_number": "MLPPL/748",
+      "document_date": "15/11/2025",
+      "gstin_of_consignor": "09AALCM9340H1Z2",
+      "legal_name_of_consignor": "MALPANI LOCKS PROTECTION PVT. LTD.",
+      "address1_of_consignor": "19/204, GOPALPURI, PALA ROAD,, ALIGARH-202001",
+      "address2_of_consignor": "",
+      "place_of_consignor": "ALIGARH",
+      "pincode_of_consignor": 202001,
+      "state_of_consignor": "UTTAR PRADESH",
+      "gstin_of_consignee": "09AAHCD0309D1Z4",
+      "legal_name_of_consignee": "DOORKIT HARDWARE PRIVATE LIMITED",
+      "address1_of_consignee": "592KA/258, KHARIKHA-1, SUBHANI KHEDA,, LUCKNOW-226029",
+      "address2_of_consignee": "",
+      "place_of_consignee": "LUCKNOW",
+      "pincode_of_consignee": 226029,
+      "state_of_supply": "UTTAR PRADESH",
+      "taxable_amount": 76135.24,
+      "total_invoice_value": 89840.0,
+      "cgst_amount": 6852.18,
+      "sgst_amount": 6852.18,
+      "igst_amount": 0.0,
+      "cess_amount": 0.0,
+      "transporter_id": "09COVPS5556J1ZT",
+      "transporter_name": "S.S. TRANSPORT",
+      "eway_bill_status": "Active",
+      "transportation_distance": 420,
+      "number_of_valid_days": 0,
+      "eway_bill_valid_date": "",
+      "extended_times": 0,
+      "reject_status": "N",
+      "vehicle_type": "",
+      "actual_from_state_name": "UTTAR PRADESH",
+      "actual_to_state_name": "UTTAR PRADESH",
+      "transaction_type": "Regular",
+      "other_value": 0.4,
+      "cess_nonadvol_value": 0.0,
+      "itemList": [
+        {
+          "item_number": 1,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-100MM-SILVER/SARTURN",
+          "hsn_code": 83024110,
+          "quantity": 108.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 5228.06
+        },
+        {
+          "item_number": 2,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-150MM-SILVER/SATURN",
+          "hsn_code": 83024110,
+          "quantity": 72.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 5242.41
+        },
+        {
+          "item_number": 3,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-200MM-SILVER/SARTURN",
+          "hsn_code": 83024110,
+          "quantity": 36.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 3499.89
+        },
+        {
+          "item_number": 4,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-100MM-R/GOLD",
+          "hsn_code": 83024110,
+          "quantity": 108.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 5228.06
+        },
+        {
+          "item_number": 5,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-150MM-R/GOLD",
+          "hsn_code": 83024110,
+          "quantity": 72.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 5242.41
+        },
+        {
+          "item_number": 6,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-CABINET HANDLE-NUKE-200MM-R/GOLD",
+          "hsn_code": 83024110,
+          "quantity": 36.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 3499.89
+        },
+        {
+          "item_number": 7,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "ALU. PIPE END-CAP",
+          "hsn_code": 83024200,
+          "quantity": 144.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 3456.0
+        },
+        {
+          "item_number": 8,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "DOOR LOCK GRIP-BULLET-125MM-SS",
+          "hsn_code": 83014090,
+          "quantity": 40.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 9583.68
+        },
+        {
+          "item_number": 9,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "BRASS-CHEST HANDLE-RADO-50MM-AB",
+          "hsn_code": 83024110,
+          "quantity": 90.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 8017.49
+        },
+        {
+          "item_number": 10,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "WM-BATHROOM LATCH-BIG-N/S",
+          "hsn_code": 83024110,
+          "quantity": 20.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 2188.51
+        },
+        {
+          "item_number": 11,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "SS-CHEST  HANDLE MARINA-75MM",
+          "hsn_code": 83024110,
+          "quantity": 384.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 11872.05
+        },
+        {
+          "item_number": 12,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "SLIDING GLASS LOCK",
+          "hsn_code": 83013000,
+          "quantity": 50.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 2216.88
+        },
+        {
+          "item_number": 13,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "CUP BOARD LOCK-PUF-75MM-D/A-DLX",
+          "hsn_code": 83013000,
+          "quantity": 60.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 4124.74
+        },
+        {
+          "item_number": 14,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "MS-TABLE CORNER-38MM",
+          "hsn_code": 83024200,
+          "quantity": 800.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 1708.8
+        },
+        {
+          "item_number": 15,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "MS-TABLE CORNER-50MM",
+          "hsn_code": 83024200,
+          "quantity": 800.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 2634.24
+        },
+        {
+          "item_number": 16,
+          "product_id": 0,
+          "product_name": "",
+          "product_description": "SS-BACK DOOR STOPPER",
+          "hsn_code": 83024110,
+          "quantity": 120.0,
+          "unit_of_product": "PCS",
+          "cgst_rate": 9.0,
+          "sgst_rate": 9.0,
+          "igst_rate": 0,
+          "cess_rate": 0.0,
+          "cessNonAdvol": 0.0,
+          "taxable_amount": 2392.13
+        }
+      ],
+      "VehiclListDetails": []
+    },
+    "status": "Success",
+    "code": 200
+  }
+}
+
+The e-way bill number 431646987772 belongs to GSTIN 09COVPS5556J1ZT.
+I am using the production API endpoint: https://prod-api.mastersindia.co/api/v1/
+
+Please help me understand why this error is occurring.
+
+Best regards,
+Your Name

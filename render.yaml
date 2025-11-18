@@ -4,14 +4,14 @@ services:
     env: python
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT main:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT App:app
     plan: free
     envVars:
       - key: PYTHON_VERSION
         value: 3.12
       - key: PORT
         value: 5000
-    healthCheckPath: /api/v1/health
+    healthCheckPath: /api/health
     region: oregon
     scaling:
       minInstances: 1

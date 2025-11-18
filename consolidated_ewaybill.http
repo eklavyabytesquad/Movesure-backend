@@ -1,0 +1,50 @@
+### Health Check
+GET http://localhost:5000/api/health
+Content-Type: application/json
+
+### Refresh JWT Token
+POST http://localhost:5000/api/refresh-token
+Content-Type: application/json
+
+### Create Consolidated E-Way Bill
+POST http://localhost:5000/api/consolidated-ewaybill
+Content-Type: application/json
+
+{
+  "userGstin": "05AAABB0639G1Z8",
+  "place_of_consignor": "RAJPURA",
+  "state_of_consignor": "PUNJAB",
+  "vehicle_number": "JJK8977",
+  "mode_of_transport": 2,
+  "transporter_document_number": 14456,
+  "transporter_document_date": "15/09/2023",
+  "data_source": "erp",
+  "list_of_eway_bills": [
+    {
+      "eway_bill_number": "381009218819"
+    },
+    {
+      "eway_bill_number": "371009218816"
+    }
+  ]
+}
+
+### Create Consolidated E-Way Bill - Another Example
+POST http://localhost:5000/api/consolidated-ewaybill
+Content-Type: application/json
+
+{
+  "userGstin": "09COVPS5556J1ZT",
+  "place_of_consignor": "DELHI",
+  "state_of_consignor": "DELHI",
+  "vehicle_number": "DL01AB1234",
+  "mode_of_transport": 1,
+  "transporter_document_number": 12345,
+  "transporter_document_date": "07/10/2025",
+  "data_source": "erp",
+  "list_of_eway_bills": [
+    {
+      "eway_bill_number": "451629889107"
+    }
+  ]
+}
