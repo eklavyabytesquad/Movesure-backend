@@ -12,6 +12,8 @@ from ewaybill_service import get_ewaybill_details
 from consolidated_ewaybill_service import create_consolidated_ewaybill
 from transporter_id_service import update_transporter_id
 from transporter_update_with_pdf_service import update_transporter_and_get_pdf
+from extend_ewaybill_service import extend_ewaybill_validity
+from distance_service import get_distance
 
 # Flask App Configuration
 app = Flask(__name__)
@@ -263,6 +265,96 @@ def transporter_update_with_pdf():
             "message": f"Internal server error: {str(e)}"
         }), 500
 
+@app.route('/api/extend-ewaybill', methods=['POST'])
+def extend_ewaybill():
+    """
+    API endpoint to extend the validity of an e-way bill.
+    
+    Accepts JSON payload:
+    {
+        "userGstin": "05AAABB0639G1Z8",
+        "eway_bill_number": 311003430463,
+        "vehicle_number": "KA12TR1234",
+        "place_of_consignor": "Dehradun",
+        "state_of_consignor": "UTTARAKHAND",
+        "remaining_distance": 10,
+        "transporter_document_number": "123",
+        "transporter_document_date": "25/06/2023",
+        "mode_of_transport": "5",
+        "extend_validity_reason": "Natural Calamity",
+        "extend_remarks": "Flood",
+        "consignment_status": "T",
+        "from_pincode": 248001,
+        "transit_type": "W",
+        "address_line1": "HUBLI",
+        "address_line2": "HUBLI",
+        "address_line3": "HUBLI"
+    }
+
+    mode_of_transport: 1=Road, 2=Rail, 3=Air, 4=Ship, 5=In Transit
+    consignment_status: M (modes 1-4), T (mode 5)
+    transit_type: R/W/O (only when mode_of_transport=5, blank otherwise)
+    """
+    try:
+        # Get request data
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No data provided"
+            }), 400
+
+        # Call service function
+        result = extend_ewaybill_validity(data)
+
+        # Return response
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            status_code = result.get("status_code", 500)
+            return jsonify(result), status_code
+
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
+@app.route('/api/distance', methods=['GET'])
+def distance():
+    """
+    API endpoint to get distance between two pincodes.
+    Query Parameters:
+        - fromPincode: Origin pincode (6 digits)
+        - toPincode: Destination pincode (6 digits)
+    """
+    try:
+        from_pincode = request.args.get('fromPincode')
+        to_pincode = request.args.get('toPincode')
+
+        if not from_pincode or not to_pincode:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required query parameters: fromPincode and toPincode"
+            }), 400
+
+        result = get_distance(from_pincode, to_pincode)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            status_code = result.get("status_code", 500)
+            return jsonify(result), status_code
+
+    except Exception as e:
+        print(f"\u274c Exception occurred: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """
@@ -300,6 +392,8 @@ if __name__ == "__main__":
     print(f"   - POST /api/consolidated-ewaybill")
     print(f"   - POST /api/transporter-update")
     print(f"   - POST /api/transporter-update-with-pdf (2 API calls)")
+    print(f"   - POST /api/extend-ewaybill")
+    print(f"   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
     print(f"   - POST /api/refresh-token")
     print("=" * 70)
     print("💡 Token auto-refresh enabled - Server will run continuously!")
