@@ -98,12 +98,16 @@ def update_transporter_id(user_gstin, eway_bill_number, transporter_id, transpor
                         "status_code": 400
                     }
                 else:
-                    # Success case
+                    # Success case - extract key fields to top level for easy frontend access
                     print(f"✅ Success: {json.dumps(response_data, indent=2)}")
                     
                     return {
                         "status": "success",
                         "message": "Transporter ID updated successfully",
+                        "eway_bill_number": message_field.get("ewayBillNo"),
+                        "transporter_id": message_field.get("transporterId"),
+                        "update_date": message_field.get("transUpdateDate"),
+                        "pdf_url": message_field.get("url"),
                         "results": results,
                         "status_code": 200
                     }
@@ -124,18 +128,7 @@ def update_transporter_id(user_gstin, eway_bill_number, transporter_id, transpor
                     return {
                         "status": "success",
                         "message": "Transporter ID updated successfully",
-                        "results": results,
-                        "status_code": 200
-                    }
-        
-        elif response.status_code == 204:
-            response_data = response.json()
-            error_message = response_data.get("results", {}).get("message", "Unknown error")
-            print(f"⚠️ No Content: {error_message}")
-            
-            return {
-                "status": "error",
-                "message": error_message,
+                        "eway_bill_number": message_field,
                 "results": response_data.get("results", {}),
                 "status_code": 204
             }
