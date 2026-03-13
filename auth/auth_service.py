@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 AUTH_URL = "https://prod-api.mastersindia.co/api/v1/token-auth/"
 USERNAME = "eklavyasingh9870@gmail.com"
 PASSWORD = "3Mw@esRcnk3DM@C"
-TOKEN_FILE = "jwt_token.json"
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), "jwt_token.json")
 TOKEN_EXPIRY_HOURS = 23  # Assume token expires in 23 hours
 
 # In-memory token cache (survives across requests in same process)

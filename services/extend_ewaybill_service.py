@@ -14,7 +14,7 @@ Validations:
 import requests
 import json
 import re
-from auth_service import load_jwt_token
+from auth.auth_service import load_jwt_token
 
 # API Configuration
 EXTEND_VALIDITY_URL = "https://prod-api.mastersindia.co/api/v1/ewayBillValidityExtend/"

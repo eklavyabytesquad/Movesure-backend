@@ -5,7 +5,7 @@ via the Masters India E-Way Bill API.
 """
 import requests
 import json
-from auth_service import get_auth_headers
+from auth.auth_service import get_auth_headers
 
 # API Configuration
 BASE_URL = "https://prod-api.mastersindia.co/api/v1/"

@@ -4,7 +4,7 @@ This script captures the exact request and response details for debugging the 32
 """
 import requests
 import json
-from auth_service import load_jwt_token
+from auth.auth_service import load_jwt_token
 
 def capture_request_payload():
     """

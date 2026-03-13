@@ -5,7 +5,7 @@ Handles transporter ID updates for e-way bills
 import requests
 import json
 import re
-from auth_service import load_jwt_token
+from auth.auth_service import load_jwt_token
 
 
 def _parse_nic_error(error_message):

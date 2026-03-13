@@ -5,7 +5,7 @@ Handles transporter ID updates and subsequent PDF retrieval
 import requests
 import json
 import base64
-from auth_service import load_jwt_token
+from auth.auth_service import load_jwt_token
 
 # API Configuration
 TRANSPORTER_UPDATE_URL = "https://prod-api.mastersindia.co/api/v1/transporterIdUpdate/"

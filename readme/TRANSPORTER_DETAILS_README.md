@@ -3,6 +3,8 @@
 ## Overview
 Retrieves transporter details (trade name, legal name, address, state, status, etc.) from the NIC E-Way Bill system via the Masters India API.
 
+> **Note:** This API uses the same `action=GetGSTINDetails` as the GSTIN Details API (#13). The NIC E-Way Bill system does not expose a separate "GetTransporterDetails" action — transporter info is fetched via the same GSTIN lookup. The difference is purely semantic: this endpoint is intended for looking up transporter GSTINs specifically. Failed lookups return NIC error code `328` ("Could not retrieve transporter details from gstin").
+
 ## Endpoint
 
 ```
@@ -55,7 +57,7 @@ curl "https://your-server/api/transporter-details?userGstin=09COVPS5556J1ZT&gsti
 
 ## Files
 
-| File                            | Purpose                               |
-|---------------------------------|---------------------------------------|
-| `transporter_details_service.py`| Service logic & API call              |
-| `app.py`                        | Flask route `/api/transporter-details`|
+| File                                  | Purpose                               |
+|---------------------------------------|---------------------------------------|
+| `services/transporter_details_service.py` | Service logic & API call              |
+| `app.py`                              | Flask route `/api/transporter-details`|

@@ -7,15 +7,15 @@ from flask_cors import CORS
 from datetime import datetime
 
 # Import service modules
-from auth_service import get_jwt_token, load_jwt_token
-from ewaybill_service import get_ewaybill_details
-from consolidated_ewaybill_service import create_consolidated_ewaybill
-from transporter_id_service import update_transporter_id
-from transporter_update_with_pdf_service import update_transporter_and_get_pdf
-from extend_ewaybill_service import extend_ewaybill_validity
-from distance_service import get_distance
-from gstin_details_service import get_gstin_details
-from transporter_details_service import get_transporter_details
+from auth.auth_service import get_jwt_token, load_jwt_token
+from services.ewaybill_service import get_ewaybill_details
+from services.consolidated_ewaybill_service import create_consolidated_ewaybill
+from services.transporter_id_service import update_transporter_id
+from services.transporter_update_with_pdf_service import update_transporter_and_get_pdf
+from services.extend_ewaybill_service import extend_ewaybill_validity
+from services.distance_service import get_distance
+from services.gstin_details_service import get_gstin_details
+from services.transporter_details_service import get_transporter_details
 
 # Flask App Configuration
 app = Flask(__name__)

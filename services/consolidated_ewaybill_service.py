@@ -4,7 +4,7 @@ Handles consolidated e-way bill operations
 """
 import requests
 import json
-from auth_service import get_auth_headers
+from auth.auth_service import get_auth_headers
 
 # API Configuration
 CONSOLIDATED_EWB_URL = "https://prod-api.mastersindia.co/api/v1/consolidatedEwayBillsGenerate/"

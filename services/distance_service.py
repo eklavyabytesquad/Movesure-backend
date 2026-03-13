@@ -4,7 +4,7 @@ Fetches pincode-to-pincode distance via MastersIndia API
 """
 import requests
 import json
-from auth_service import load_jwt_token
+from auth.auth_service import load_jwt_token
 
 # API Configuration
 DISTANCE_URL = "https://prod-api.mastersindia.co/api/v1/distance/"
