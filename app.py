@@ -14,6 +14,8 @@ from transporter_id_service import update_transporter_id
 from transporter_update_with_pdf_service import update_transporter_and_get_pdf
 from extend_ewaybill_service import extend_ewaybill_validity
 from distance_service import get_distance
+from gstin_details_service import get_gstin_details
+from transporter_details_service import get_transporter_details
 
 # Flask App Configuration
 app = Flask(__name__)
@@ -355,6 +357,72 @@ def distance():
             "message": f"Internal server error: {str(e)}"
         }), 500
 
+@app.route('/api/gstin-details', methods=['GET'])
+def gstin_details():
+    """
+    API endpoint to get GSTIN details.
+    Query Parameters:
+        - userGstin: Logged-in user's GSTIN
+        - gstin: GSTIN to look up
+    """
+    try:
+        user_gstin = request.args.get('userGstin')
+        gstin = request.args.get('gstin')
+
+        if not user_gstin or not gstin:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required query parameters: userGstin and gstin"
+            }), 400
+
+        result = get_gstin_details(user_gstin, gstin)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            status_code = result.get("status_code", 500)
+            return jsonify(result), status_code
+
+    except Exception as e:
+        print(f"\u274c Exception occurred: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
+@app.route('/api/transporter-details', methods=['GET'])
+def transporter_details():
+    """
+    API endpoint to get transporter details.
+    Query Parameters:
+        - userGstin: Logged-in user's GSTIN
+        - gstin: Transporter GSTIN to look up
+    """
+    try:
+        user_gstin = request.args.get('userGstin')
+        gstin = request.args.get('gstin')
+
+        if not user_gstin or not gstin:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required query parameters: userGstin and gstin"
+            }), 400
+
+        result = get_transporter_details(user_gstin, gstin)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            status_code = result.get("status_code", 500)
+            return jsonify(result), status_code
+
+    except Exception as e:
+        print(f"\u274c Exception occurred: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """
@@ -394,6 +462,8 @@ if __name__ == "__main__":
     print(f"   - POST /api/transporter-update-with-pdf (2 API calls)")
     print(f"   - POST /api/extend-ewaybill")
     print(f"   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
+    print(f"   - GET  /api/gstin-details?userGstin=XXX&gstin=YYY")
+    print(f"   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
     print(f"   - POST /api/refresh-token")
     print("=" * 70)
     print("💡 Token auto-refresh enabled - Server will run continuously!")
