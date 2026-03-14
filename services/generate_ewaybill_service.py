@@ -163,6 +163,11 @@ def validate_payload(data):
             if not item.get('product_name') and item.get('product_description'):
                 item['product_name'] = item['product_description']
 
+            # Auto-fix negative tax rates (-1 means "not applicable" in govt data, convert to 0)
+            for rate_field in ['cgst_rate', 'sgst_rate', 'igst_rate', 'cess_rate']:
+                if rate_field in item and float(item[rate_field]) < 0:
+                    item[rate_field] = 0
+
             # HSN code must be numeric, 4-8 digits
             hsn = str(item.get('hsn_code', '')).strip()
             if not re.match(r'^\d{4,8}$', hsn):
