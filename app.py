@@ -16,6 +16,7 @@ from services.extend_ewaybill_service import extend_ewaybill_validity
 from services.distance_service import get_distance
 from services.gstin_details_service import get_gstin_details
 from services.transporter_details_service import get_transporter_details
+from services.generate_ewaybill_service import generate_ewaybill
 
 # Flask App Configuration
 app = Flask(__name__)
@@ -423,6 +424,37 @@ def transporter_details():
             "message": f"Internal server error: {str(e)}"
         }), 500
 
+@app.route('/api/generate-ewaybill', methods=['POST'])
+def generate_ewaybill_endpoint():
+    """
+    API endpoint to generate a new E-Way Bill.
+    Accepts full e-way bill JSON payload including itemList.
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No data provided"
+            }), 400
+
+        # Call service function
+        result = generate_ewaybill(data)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            status_code = result.get("status_code", 500)
+            return jsonify(result), status_code
+
+    except Exception as e:
+        print(f"\u274c Exception occurred: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """
@@ -464,6 +496,7 @@ if __name__ == "__main__":
     print(f"   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
     print(f"   - GET  /api/gstin-details?userGstin=XXX&gstin=YYY")
     print(f"   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
+    print(f"   - POST /api/generate-ewaybill")
     print(f"   - POST /api/refresh-token")
     print("=" * 70)
     print("💡 Token auto-refresh enabled - Server will run continuously!")
