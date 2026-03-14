@@ -179,6 +179,22 @@ def validate_payload(data):
     return True, None, None
 
 
+def normalize_payload(data):
+    """
+    Normalize field names from snake_case (frontend) to expected format.
+    Handles: user_gstin -> userGstin, item_list -> itemList
+    """
+    # Map of snake_case -> expected camelCase/mixedCase field names
+    field_map = {
+        'user_gstin': 'userGstin',
+        'item_list': 'itemList',
+    }
+    for snake, camel in field_map.items():
+        if snake in data and camel not in data:
+            data[camel] = data.pop(snake)
+    return data
+
+
 def generate_ewaybill(data):
     """
     Generate a new E-Way Bill.
@@ -189,6 +205,9 @@ def generate_ewaybill(data):
     Returns:
         dict: Response with status, message, and data.
     """
+    # Normalize field names (accept both snake_case and camelCase from frontend)
+    data = normalize_payload(data)
+
     # Validate payload
     is_valid, error_msg, error_type = validate_payload(data)
     if not is_valid:
