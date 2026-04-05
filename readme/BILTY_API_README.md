@@ -68,8 +68,14 @@ const { data } = await res.json();
       "ALG": { "id": "uuid-1", "city_code": "ALG", "city_name": "ALIGARH" }
     },
     "transports": [
-      { "id": "uuid", "transport_name": "S S TRANSPORT", "transport_gst": "...", "transport_number": "..." }
+      { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "uuid", "city_name": "KANPUR", "gst_number": "09COVPS5556J1ZT", "mob_number": "7668291228", "address": "TRANSPORT NAGAR", "branch_owner_name": "RAJEEV" }
     ],
+    "transport_by_city_id": {
+      "city-uuid-1": [
+        { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "..." },
+        { "id": "uuid", "transport_name": "VIJAY TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "..." }
+      ]
+    },
     "consignors": [
       { "id": "uuid", "company_name": "ABC CO", "gst_num": "...", "number": "..." }
     ],
@@ -109,6 +115,34 @@ async function loadInitialData() {
   // Cache city lookups — use these for PDF generation
   cityByIdRef.current = data.city_by_id;
   cityByCodeRef.current = data.city_by_code;
+  
+  // Cache transport lookup by city — use for auto-filling transport on city select
+  transportByCityIdRef.current = data.transport_by_city_id;
+}
+
+// When user types a city code (e.g. "KNP"):
+function onToCityCodeChange(cityCode) {
+  const city = cityByCodeRef.current[cityCode];
+  if (!city) return;
+  
+  setFormData(prev => ({ ...prev, to_city_id: city.id }));
+  
+  // Auto-fill transports for this city
+  const cityTransports = transportByCityIdRef.current[city.id] || [];
+  setFilteredTransports(cityTransports);
+  
+  // If only 1 transport, auto-select it
+  if (cityTransports.length === 1) {
+    const t = cityTransports[0];
+    setFormData(prev => ({
+      ...prev,
+      to_city_id: city.id,
+      transport_name: t.transport_name,
+      transport_gst: t.gst_number,
+      transport_number: t.mob_number,
+      transport_id: t.id,
+    }));
+  }
 }
 ```
 
