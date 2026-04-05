@@ -1,10 +1,13 @@
 """
-Flask API for E-Way Bill Management
-Handles authentication, e-way bill retrieval, and consolidated e-way bill creation
+FastAPI Backend for E-Way Bill Management & Bilty Operations
 """
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI, Request, Query, Path
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from datetime import datetime
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Import service modules
 from auth.auth_service import get_jwt_token, load_jwt_token
@@ -19,552 +22,15 @@ from services.transporter_details_service import get_transporter_details
 from services.generate_ewaybill_service import generate_ewaybill
 from services.reference_data_service import get_reference_data
 from services.bilty_save_service import save_bilty, get_bilty_with_cities
-
-# Flask App Configuration
-app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-
-@app.before_request
-def ensure_valid_token():
-    """
-    Middleware to ensure JWT token is valid before processing any request
-    Automatically refreshes token if expired
-    """
-    # Skip token check for health endpoint, refresh-token, and bilty endpoints
-    if request.path in ['/api/health', '/api/refresh-token'] or request.path.startswith('/api/bilty'):
-        return None
-    
-    print(f"🔍 Validating token for request: {request.method} {request.path}")
-    
-    # Check and refresh token if needed
-    token = load_jwt_token()
-    if not token:
-        print("⚠️ Token validation failed, attempting to refresh...")
-        token = get_jwt_token()
-        if not token:
-            print("❌ Failed to obtain valid token")
-            return jsonify({
-                "status": "error",
-                "message": "Authentication failed. Unable to obtain valid JWT token."
-            }), 503
-        else:
-            print("✅ Successfully obtained new token")
-    else:
-        print("✅ Token validated successfully")
-
-@app.route('/api/ewaybill', methods=['GET'])
-def get_ewaybill():
-    """
-    API endpoint to get e-way bill details
-    Query Parameters:
-        - eway_bill_number: E-way bill number
-        - gstin: GSTIN number
-    """
-    try:
-        # Get query parameters
-        eway_bill_number = request.args.get('eway_bill_number')
-        gstin = request.args.get('gstin')
-        
-        # Validate required parameters
-        if not eway_bill_number or not gstin:
-            return jsonify({
-                "status": "error",
-                "message": "Missing required parameters: eway_bill_number and gstin"
-            }), 400
-        
-        # Call service function
-        result = get_ewaybill_details(eway_bill_number, gstin)
-        
-        # Return response
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-            
-    except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/consolidated-ewaybill', methods=['POST'])
-def consolidated_ewaybill_endpoint():
-    """
-    API endpoint to create consolidated e-way bill
-    Accepts JSON payload and uses JWT token from jwt_token.json
-    """
-    try:
-        # Get request data
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-        
-        # Call service function
-        result = create_consolidated_ewaybill(data)
-        
-        # Return response
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-            
-    except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/refresh-token', methods=['POST'])
-def refresh_token():
-    """
-    API endpoint to refresh JWT token
-    """
-    try:
-        token = get_jwt_token()
-        if token:
-            return jsonify({
-                "status": "success",
-                "message": "JWT token refreshed successfully",
-                "token": token
-            }), 200
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Failed to refresh JWT token"
-            }), 500
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Error: {str(e)}"
-        }), 500
-
-@app.route('/api/transporter-update', methods=['POST'])
-def transporter_update():
-    """
-    API endpoint to update transporter ID for an e-way bill
-    Accepts JSON payload:
-    {
-        "user_gstin": "05AAABB0639G1Z8",
-        "eway_bill_number": "321009218808",
-        "transporter_id": "05AAAAU6537D1ZO",
-        "transporter_name": "MS Uttarayan"
-    }
-    """
-    try:
-        # Get request data
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-        
-        # Validate required fields
-        required_fields = ['user_gstin', 'eway_bill_number', 'transporter_id', 'transporter_name']
-        missing_fields = [field for field in required_fields if field not in data]
-        
-        if missing_fields:
-            return jsonify({
-                "status": "error",
-                "message": f"Missing required fields: {', '.join(missing_fields)}"
-            }), 400
-        
-        # Extract parameters
-        user_gstin = data.get('user_gstin')
-        eway_bill_number = data.get('eway_bill_number')
-        transporter_id = data.get('transporter_id')
-        transporter_name = data.get('transporter_name')
-        
-        # Call service function
-        result = update_transporter_id(
-            user_gstin=user_gstin,
-            eway_bill_number=eway_bill_number,
-            transporter_id=transporter_id,
-            transporter_name=transporter_name
-        )
-        
-        # Return response
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-            
-    except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/transporter-update-with-pdf', methods=['POST'])
-def transporter_update_with_pdf():
-    """
-    API endpoint to update transporter ID and retrieve PDF
-    Makes two API calls as per MastersGST support instructions:
-    1. First call: Updates the transporter
-    2. Second call: Retrieves the PDF
-    
-    Accepts JSON payload:
-    {
-        "user_gstin": "09AAACA2669Q1Z4",
-        "eway_bill_number": "481646922017",
-        "transporter_id": "09COVPS5556J1ZT",
-        "transporter_name": "S S TRANSPORT CORPORATION"
-    }
-    """
-    try:
-        # Get request data
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-        
-        # Validate required fields
-        required_fields = ['user_gstin', 'eway_bill_number', 'transporter_id', 'transporter_name']
-        missing_fields = [field for field in required_fields if field not in data]
-        
-        if missing_fields:
-            return jsonify({
-                "status": "error",
-                "message": f"Missing required fields: {', '.join(missing_fields)}"
-            }), 400
-        
-        # Extract parameters
-        user_gstin = data.get('user_gstin')
-        eway_bill_number = data.get('eway_bill_number')
-        transporter_id = data.get('transporter_id')
-        transporter_name = data.get('transporter_name')
-        
-        # Call service function (makes 2 API calls)
-        result = update_transporter_and_get_pdf(
-            user_gstin=user_gstin,
-            eway_bill_number=eway_bill_number,
-            transporter_id=transporter_id,
-            transporter_name=transporter_name
-        )
-        
-        # Return response
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-            
-    except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/extend-ewaybill', methods=['POST'])
-def extend_ewaybill():
-    """
-    API endpoint to extend the validity of an e-way bill.
-    
-    Accepts JSON payload:
-    {
-        "userGstin": "05AAABB0639G1Z8",
-        "eway_bill_number": 311003430463,
-        "vehicle_number": "KA12TR1234",
-        "place_of_consignor": "Dehradun",
-        "state_of_consignor": "UTTARAKHAND",
-        "remaining_distance": 10,
-        "transporter_document_number": "123",
-        "transporter_document_date": "25/06/2023",
-        "mode_of_transport": "5",
-        "extend_validity_reason": "Natural Calamity",
-        "extend_remarks": "Flood",
-        "consignment_status": "T",
-        "from_pincode": 248001,
-        "transit_type": "W",
-        "address_line1": "HUBLI",
-        "address_line2": "HUBLI",
-        "address_line3": "HUBLI"
-    }
-
-    mode_of_transport: 1=Road, 2=Rail, 3=Air, 4=Ship, 5=In Transit
-    consignment_status: M (modes 1-4), T (mode 5)
-    transit_type: R/W/O (only when mode_of_transport=5, blank otherwise)
-    """
-    try:
-        # Get request data
-        data = request.get_json()
-
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-
-        # Call service function
-        result = extend_ewaybill_validity(data)
-
-        # Return response
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-
-    except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/distance', methods=['GET'])
-def distance():
-    """
-    API endpoint to get distance between two pincodes.
-    Query Parameters:
-        - fromPincode: Origin pincode (6 digits)
-        - toPincode: Destination pincode (6 digits)
-    """
-    try:
-        from_pincode = request.args.get('fromPincode')
-        to_pincode = request.args.get('toPincode')
-
-        if not from_pincode or not to_pincode:
-            return jsonify({
-                "status": "error",
-                "message": "Missing required query parameters: fromPincode and toPincode"
-            }), 400
-
-        result = get_distance(from_pincode, to_pincode)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-
-    except Exception as e:
-        print(f"\u274c Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/gstin-details', methods=['GET'])
-def gstin_details():
-    """
-    API endpoint to get GSTIN details.
-    Query Parameters:
-        - userGstin: Logged-in user's GSTIN
-        - gstin: GSTIN to look up
-    """
-    try:
-        user_gstin = request.args.get('userGstin')
-        gstin = request.args.get('gstin')
-
-        if not user_gstin or not gstin:
-            return jsonify({
-                "status": "error",
-                "message": "Missing required query parameters: userGstin and gstin"
-            }), 400
-
-        result = get_gstin_details(user_gstin, gstin)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-
-    except Exception as e:
-        print(f"\u274c Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/transporter-details', methods=['GET'])
-def transporter_details():
-    """
-    API endpoint to get transporter details.
-    Query Parameters:
-        - userGstin: Logged-in user's GSTIN
-        - gstin: Transporter GSTIN to look up
-    """
-    try:
-        user_gstin = request.args.get('userGstin')
-        gstin = request.args.get('gstin')
-
-        if not user_gstin or not gstin:
-            return jsonify({
-                "status": "error",
-                "message": "Missing required query parameters: userGstin and gstin"
-            }), 400
-
-        result = get_transporter_details(user_gstin, gstin)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-
-    except Exception as e:
-        print(f"\u274c Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-@app.route('/api/generate-ewaybill', methods=['POST'])
-def generate_ewaybill_endpoint():
-    """
-    API endpoint to generate a new E-Way Bill.
-    Accepts full e-way bill JSON payload including itemList.
-    """
-    try:
-        data = request.get_json()
-
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-
-        # Call service function
-        result = generate_ewaybill(data)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            status_code = result.get("status_code", 500)
-            return jsonify(result), status_code
-
-    except Exception as e:
-        print(f"\u274c Exception occurred: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-# ============================================================
-# BILTY ENDPOINTS - Server-side validated bilty operations
-# ============================================================
-
-@app.route('/api/bilty/reference-data', methods=['GET'])
-def bilty_reference_data():
-    """
-    Single endpoint to preload ALL reference data for the bilty page.
-    Replaces 8 separate Supabase calls from the frontend.
-    Query Parameters:
-        - branch_id: User's branch UUID
-        - user_id: User's UUID
-    """
-    try:
-        branch_id = request.args.get('branch_id')
-        user_id = request.args.get('user_id')
-
-        if not branch_id or not user_id:
-            return jsonify({
-                "status": "error",
-                "message": "Missing required parameters: branch_id and user_id"
-            }), 400
-
-        result = get_reference_data(branch_id, user_id)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            return jsonify(result), result.get("status_code", 500)
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
+from services.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates
 
 
-@app.route('/api/bilty/save', methods=['POST'])
-def bilty_save():
-    """
-    Server-side validated bilty save.
-    Resolves city IDs to names on the server so PDF generation
-    never relies on frontend network calls.
-
-    Returns the saved bilty WITH resolved from_city and to_city objects.
-    """
-    try:
-        data = request.get_json()
-
-        if not data:
-            return jsonify({
-                "status": "error",
-                "message": "No data provided"
-            }), 400
-
-        result = save_bilty(data)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            return jsonify(result), result.get("status_code", 500)
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-
-@app.route('/api/bilty/<bilty_id>', methods=['GET'])
-def bilty_get(bilty_id):
-    """
-    Fetch a bilty with resolved city names.
-    Use for PDF generation / reprinting — guaranteed correct city data.
-    """
-    try:
-        result = get_bilty_with_cities(bilty_id)
-
-        if result.get("status") == "success":
-            return jsonify(result), 200
-        else:
-            return jsonify(result), result.get("status_code", 500)
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Internal server error: {str(e)}"
-        }), 500
-
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint
-    """
-    return jsonify({
-        "status": "success",
-        "message": "API is running",
-        "timestamp": datetime.now().isoformat()
-    }), 200
-
-if __name__ == "__main__":
-    # Ensure JWT token exists before starting server
+@asynccontextmanager
+async def lifespan(app):
+    # Startup
     print("=" * 70)
-    print("🚀 STARTING E-WAY BILL API SERVER")
+    print("🚀 STARTING E-WAY BILL API SERVER (FastAPI)")
     print("=" * 70)
-    
-    # Check and refresh token if needed
     token = load_jwt_token()
     if token:
         print("✅ JWT Token loaded successfully")
@@ -575,27 +41,358 @@ if __name__ == "__main__":
             print("✅ JWT Token obtained successfully")
         else:
             print("❌ Failed to get JWT token. Server may not work properly.")
-    
     print("=" * 70)
-    print(f"📡 Server running at: http://localhost:5000")
-    print(f"📋 Available Endpoints:")
-    print(f"   - GET  /api/health")
-    print(f"   - GET  /api/ewaybill?eway_bill_number=XXX&gstin=YYY")
-    print(f"   - POST /api/consolidated-ewaybill")
-    print(f"   - POST /api/transporter-update")
-    print(f"   - POST /api/transporter-update-with-pdf (2 API calls)")
-    print(f"   - POST /api/extend-ewaybill")
-    print(f"   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
-    print(f"   - GET  /api/gstin-details?userGstin=XXX&gstin=YYY")
-    print(f"   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
-    print(f"   - POST /api/generate-ewaybill")
-    print(f"   - POST /api/refresh-token")
-    print(f"   - GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY")
-    print(f"   - POST /api/bilty/save")
-    print(f"   - GET  /api/bilty/<bilty_id>")
+    print("📡 Server running at: http://localhost:5000")
+    print("📋 Available Endpoints:")
+    print("   - GET  /api/health")
+    print("   - GET  /api/ewaybill?eway_bill_number=XXX&gstin=YYY")
+    print("   - POST /api/consolidated-ewaybill")
+    print("   - POST /api/transporter-update")
+    print("   - POST /api/transporter-update-with-pdf (2 API calls)")
+    print("   - POST /api/extend-ewaybill")
+    print("   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
+    print("   - GET  /api/gstin-details?userGstin=XXX&gstin=YYY")
+    print("   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
+    print("   - POST /api/generate-ewaybill")
+    print("   - POST /api/refresh-token")
+    print("   - GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY")
+    print("   - POST /api/bilty/save")
+    print("   - GET  /api/bilty/{bilty_id}")
+    print("   - GET  /api/bilty/rates/consignor/{consignor_id}")
+    print("   - GET  /api/bilty/rates/default?branch_id=XXX")
+    print("   - GET  /api/bilty/rates/all?consignor_id=XXX&branch_id=YYY")
     print("=" * 70)
     print("💡 Token auto-refresh enabled - Server will run continuously!")
     print("=" * 70)
-    
-    # Run Flask server
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    yield
+    # Shutdown
+    _executor.shutdown(wait=False)
+
+
+app = FastAPI(title="Movesure Backend", lifespan=lifespan)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Thread pool for running blocking service calls without blocking the event loop
+_executor = ThreadPoolExecutor(max_workers=8)
+
+
+async def _run(func, *args):
+    """Run a blocking function in the thread pool."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, func, *args)
+
+
+def _response(result: dict) -> JSONResponse:
+    """Convert a service result dict to a JSONResponse."""
+    if result.get("status") == "success":
+        return JSONResponse(content=result, status_code=200)
+    return JSONResponse(content=result, status_code=result.get("status_code", 500))
+
+
+# ── Middleware: JWT token validation for e-way bill endpoints ──
+
+SKIP_AUTH_PATHS = {"/api/health", "/api/refresh-token", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def ensure_valid_token(request: Request, call_next):
+    path = request.url.path
+    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty"):
+        return await call_next(request)
+
+    print(f"🔍 Validating token for request: {request.method} {path}")
+    token = load_jwt_token()
+    if not token:
+        print("⚠️ Token validation failed, attempting to refresh...")
+        token = get_jwt_token()
+        if not token:
+            print("❌ Failed to obtain valid token")
+            return JSONResponse(
+                content={"status": "error", "message": "Authentication failed. Unable to obtain valid JWT token."},
+                status_code=503,
+            )
+        print("✅ Successfully obtained new token")
+    else:
+        print("✅ Token validated successfully")
+
+    return await call_next(request)
+
+
+# ============================================================
+# E-WAY BILL ENDPOINTS (unchanged paths & behaviour)
+# ============================================================
+
+
+@app.get("/api/ewaybill")
+async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(None)):
+    try:
+        if not eway_bill_number or not gstin:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required parameters: eway_bill_number and gstin"},
+                status_code=400,
+            )
+        result = await _run(get_ewaybill_details, eway_bill_number, gstin)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/consolidated-ewaybill")
+async def consolidated_ewaybill_endpoint(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+        result = await _run(create_consolidated_ewaybill, data)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/refresh-token")
+async def refresh_token():
+    try:
+        token = get_jwt_token()
+        if token:
+            return JSONResponse(
+                content={"status": "success", "message": "JWT token refreshed successfully", "token": token},
+                status_code=200,
+            )
+        return JSONResponse(content={"status": "error", "message": "Failed to refresh JWT token"}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/transporter-update")
+async def transporter_update(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+
+        required_fields = ['user_gstin', 'eway_bill_number', 'transporter_id', 'transporter_name']
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            return JSONResponse(
+                content={"status": "error", "message": f"Missing required fields: {', '.join(missing_fields)}"},
+                status_code=400,
+            )
+
+        result = await _run(
+            lambda: update_transporter_id(
+                user_gstin=data['user_gstin'],
+                eway_bill_number=data['eway_bill_number'],
+                transporter_id=data['transporter_id'],
+                transporter_name=data['transporter_name'],
+            )
+        )
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/transporter-update-with-pdf")
+async def transporter_update_with_pdf(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+
+        required_fields = ['user_gstin', 'eway_bill_number', 'transporter_id', 'transporter_name']
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            return JSONResponse(
+                content={"status": "error", "message": f"Missing required fields: {', '.join(missing_fields)}"},
+                status_code=400,
+            )
+
+        result = await _run(
+            lambda: update_transporter_and_get_pdf(
+                user_gstin=data['user_gstin'],
+                eway_bill_number=data['eway_bill_number'],
+                transporter_id=data['transporter_id'],
+                transporter_name=data['transporter_name'],
+            )
+        )
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/extend-ewaybill")
+async def extend_ewaybill(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+        result = await _run(extend_ewaybill_validity, data)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/distance")
+async def distance(fromPincode: str = Query(None), toPincode: str = Query(None)):
+    try:
+        if not fromPincode or not toPincode:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required query parameters: fromPincode and toPincode"},
+                status_code=400,
+            )
+        result = await _run(get_distance, fromPincode, toPincode)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/gstin-details")
+async def gstin_details(userGstin: str = Query(None), gstin: str = Query(None)):
+    try:
+        if not userGstin or not gstin:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required query parameters: userGstin and gstin"},
+                status_code=400,
+            )
+        result = await _run(get_gstin_details, userGstin, gstin)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/transporter-details")
+async def transporter_details(userGstin: str = Query(None), gstin: str = Query(None)):
+    try:
+        if not userGstin or not gstin:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required query parameters: userGstin and gstin"},
+                status_code=400,
+            )
+        result = await _run(get_transporter_details, userGstin, gstin)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/generate-ewaybill")
+async def generate_ewaybill_endpoint(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+        result = await _run(generate_ewaybill, data)
+        return _response(result)
+    except Exception as e:
+        print(f"❌ Exception occurred: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# BILTY ENDPOINTS - Server-side validated bilty operations
+# ============================================================
+
+
+@app.get("/api/bilty/reference-data")
+async def bilty_reference_data(branch_id: str = Query(None), user_id: str = Query(None)):
+    try:
+        if not branch_id or not user_id:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required parameters: branch_id and user_id"},
+                status_code=400,
+            )
+        result = await _run(get_reference_data, branch_id, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/bilty/save")
+async def bilty_save(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+        result = await _run(save_bilty, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/{bilty_id}")
+async def bilty_get(bilty_id: str = Path(...)):
+    try:
+        result = await _run(get_bilty_with_cities, bilty_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# RATE ENDPOINTS - Consignor profile rates & default rates
+# ============================================================
+
+
+@app.get("/api/bilty/rates/consignor/{consignor_id}")
+async def consignor_rates(consignor_id: str = Path(...)):
+    """Fetch all active rate profiles for a consignor (from consignor_bilty_profile)."""
+    try:
+        result = await _run(get_consignor_rates, consignor_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/rates/default")
+async def default_rates(branch_id: str = Query(...)):
+    """Fetch default city-wise rates for a branch (from rates table)."""
+    try:
+        result = await _run(get_default_rates, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/rates/all")
+async def all_rates(consignor_id: str = Query(...), branch_id: str = Query(...)):
+    """Fetch both consignor-specific and default rates in parallel."""
+    try:
+        result = await _run(get_all_rates, consignor_id, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+
+@app.get("/api/health")
+async def health_check():
+    return JSONResponse(
+        content={"status": "success", "message": "API is running", "timestamp": datetime.now().isoformat()},
+        status_code=200,
+    )
+
+
+# ── Startup ──
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)

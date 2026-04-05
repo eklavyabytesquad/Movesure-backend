@@ -6,6 +6,8 @@ http://localhost:5000
 ```
 On Render: `https://your-app.onrender.com`
 
+**Swagger Docs:** `http://localhost:5000/docs`
+
 ---
 
 ## Setup
@@ -382,6 +384,222 @@ const { data } = await res.json();
 
 ---
 
+### 4. `GET /api/bilty/rates/consignor/{consignor_id}` — Consignor Rate Profiles
+
+Fetch all active rates from `consignor_bilty_profile` for a specific consignor.  
+Returns destination-wise rate, labour, DD charges, transport info, etc.
+
+**Path Parameter:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `consignor_id` | Yes | Consignor UUID |
+
+**Example Request:**
+```js
+const res = await fetch(`${API_URL}/api/bilty/rates/consignor/${consignorId}`);
+const { data } = await res.json();
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "rates": [
+      {
+        "id": "uuid",
+        "consignor_id": "uuid",
+        "destination_station_id": "city-uuid",
+        "city_code": "AZM",
+        "city_name": "AZAMGARH",
+        "transport_name": "NEW INDIA EXPRESS TRANSPORT CO.",
+        "transport_gst": "09AABFN1234A1Z1",
+        "rate": 3.0,
+        "rate_unit": "PER_KG",
+        "minimum_weight_kg": 0,
+        "labour_rate": 6.0,
+        "labour_unit": "PER_KG",
+        "dd_charge_per_kg": 0,
+        "dd_charge_per_nag": 0,
+        "receiving_slip_charge": 0,
+        "bilty_charge": 0,
+        "is_no_charge": false,
+        "effective_from": "2025-01-01",
+        "effective_to": null,
+        "is_active": true,
+        "dd_print_charge_per_kg": null,
+        "dd_print_charge_per_nag": null,
+        "is_toll_tax_applicable": false,
+        "toll_tax_amount": 0,
+        "freight_minimum_amount": 0
+      }
+    ],
+    "rates_by_city": {
+      "city-uuid-1": [ { "...rate object..." } ],
+      "city-uuid-2": [ { "...rate object..." } ]
+    },
+    "count": 33
+  }
+}
+```
+
+**Frontend usage — auto-fill rate when consignor + city selected:**
+```js
+// Load when consignor changes
+async function onConsignorChange(consignorId) {
+  const res = await fetch(`${API_URL}/api/bilty/rates/consignor/${consignorId}`);
+  const { data } = await res.json();
+  consignorRatesRef.current = data.rates_by_city;
+}
+
+// When city is selected, look up rate instantly from cache
+function onToCityChange(cityId) {
+  const cityRates = consignorRatesRef.current[cityId];
+  if (cityRates && cityRates.length > 0) {
+    const r = cityRates[0];
+    setFormData(prev => ({
+      ...prev,
+      rate: r.rate,
+      labour_rate: r.labour_rate,
+      transport_name: r.transport_name || prev.transport_name,
+      transport_gst: r.transport_gst || prev.transport_gst,
+      dd_charge: r.rate_unit === 'PER_KG'
+        ? (r.dd_charge_per_kg * prev.wt)
+        : (r.dd_charge_per_nag * prev.no_of_pkg),
+      bill_charge: r.bilty_charge,
+      toll_charge: r.is_toll_tax_applicable ? r.toll_tax_amount : 0,
+    }));
+  }
+}
+```
+
+---
+
+### 5. `GET /api/bilty/rates/default` — Default Branch Rates
+
+Fetch default city-wise rates for a branch from the `rates` table.  
+Used as fallback when no `consignor_bilty_profile` exists for a consignor+city.
+
+**Query Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `branch_id` | Yes | Branch UUID |
+
+**Example Request:**
+```js
+const res = await fetch(`${API_URL}/api/bilty/rates/default?branch_id=${branchId}`);
+const { data } = await res.json();
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "rates": [
+      { "id": "uuid", "branch_id": "uuid", "city_id": "uuid", "rate": 4.5, "is_default": true }
+    ],
+    "rate_by_city_id": {
+      "city-uuid-1": 4.5,
+      "city-uuid-2": 3.5,
+      "city-uuid-3": 5.0
+    },
+    "count": 439
+  }
+}
+```
+
+**Frontend usage — fallback rate lookup:**
+```js
+// Pre-load default rates on page load
+async function loadDefaultRates(branchId) {
+  const res = await fetch(`${API_URL}/api/bilty/rates/default?branch_id=${branchId}`);
+  const { data } = await res.json();
+  defaultRateByCity.current = data.rate_by_city_id;
+}
+
+// When consignor has no profile for this city, use default
+function getRate(cityId) {
+  const consignorRates = consignorRatesRef.current[cityId];
+  if (consignorRates && consignorRates.length > 0) {
+    return consignorRates[0].rate;  // Consignor-specific rate
+  }
+  return defaultRateByCity.current[cityId] || 0;  // Default branch rate
+}
+```
+
+---
+
+### 6. `GET /api/bilty/rates/all` — Both Rates in One Call (Parallel)
+
+Fetches **both** consignor-specific AND default branch rates in parallel.  
+Use this when you need both at once (e.g., when consignor changes).
+
+**Query Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `consignor_id` | Yes | Consignor UUID |
+| `branch_id` | Yes | Branch UUID |
+
+**Example Request:**
+```js
+const res = await fetch(
+  `${API_URL}/api/bilty/rates/all?consignor_id=${consignorId}&branch_id=${branchId}`
+);
+const { data } = await res.json();
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "consignor_rates": [ { "...consignor_bilty_profile rows..." } ],
+    "consignor_rates_by_city": {
+      "city-uuid": [ { "...rate objects..." } ]
+    },
+    "default_rates": [ { "...rates table rows..." } ],
+    "default_rate_by_city_id": {
+      "city-uuid": 4.5
+    }
+  }
+}
+```
+
+**Frontend usage — smart rate resolution:**
+```js
+async function onConsignorChange(consignorId) {
+  const res = await fetch(
+    `${API_URL}/api/bilty/rates/all?consignor_id=${consignorId}&branch_id=${user.branch_id}`
+  );
+  const { data } = await res.json();
+
+  consignorRatesRef.current = data.consignor_rates_by_city;
+  defaultRateByCity.current = data.default_rate_by_city_id;
+}
+
+function getSmartRate(cityId) {
+  // Priority: consignor profile rate > default branch rate > 0
+  const profile = consignorRatesRef.current[cityId];
+  if (profile && profile.length > 0) {
+    return {
+      rate: profile[0].rate,
+      rate_unit: profile[0].rate_unit,
+      labour_rate: profile[0].labour_rate,
+      transport_name: profile[0].transport_name,
+      source: 'consignor_profile'
+    };
+  }
+  const defRate = defaultRateByCity.current[cityId];
+  if (defRate) {
+    return { rate: defRate, rate_unit: 'PER_KG', labour_rate: 0, transport_name: null, source: 'default' };
+  }
+  return { rate: 0, rate_unit: 'PER_KG', labour_rate: 0, transport_name: null, source: 'none' };
+}
+```
+
+---
+
 ## Error Responses
 
 All endpoints return errors in the same format:
@@ -409,6 +627,9 @@ All endpoints return errors in the same format:
 | PDF city data | Re-fetches from Supabase (fails on slow network) | Returned in save response (guaranteed) |
 | Rate save | Blocking (adds ~100ms to save) | Background (non-blocking) |
 | Bill book update | Blocking (adds ~100ms to save) | Background (non-blocking) |
+| Consignor rates | Frontend fetches one by one | 1 API call with city lookup map |
+| Default rates | Loaded in reference-data | Dedicated endpoint with city-id map |
+| Both rates | 2 sequential calls | 1 call, 2 parallel queries |
 
 ---
 
@@ -447,4 +668,19 @@ curl -X POST http://localhost:5000/api/bilty/save \
 **Fetch bilty for reprint:**
 ```bash
 curl "http://localhost:5000/api/bilty/YOUR_BILTY_UUID"
+```
+
+**Consignor rates:**
+```bash
+curl "http://localhost:5000/api/bilty/rates/consignor/YOUR_CONSIGNOR_UUID"
+```
+
+**Default rates:**
+```bash
+curl "http://localhost:5000/api/bilty/rates/default?branch_id=YOUR_BRANCH_UUID"
+```
+
+**Both rates (parallel):**
+```bash
+curl "http://localhost:5000/api/bilty/rates/all?consignor_id=YOUR_CONSIGNOR_UUID&branch_id=YOUR_BRANCH_UUID"
 ```
