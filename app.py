@@ -17,6 +17,8 @@ from services.distance_service import get_distance
 from services.gstin_details_service import get_gstin_details
 from services.transporter_details_service import get_transporter_details
 from services.generate_ewaybill_service import generate_ewaybill
+from services.reference_data_service import get_reference_data
+from services.bilty_save_service import save_bilty, get_bilty_with_cities
 
 # Flask App Configuration
 app = Flask(__name__)
@@ -28,8 +30,8 @@ def ensure_valid_token():
     Middleware to ensure JWT token is valid before processing any request
     Automatically refreshes token if expired
     """
-    # Skip token check for health endpoint and refresh-token endpoint
-    if request.path in ['/api/health', '/api/refresh-token']:
+    # Skip token check for health endpoint, refresh-token, and bilty endpoints
+    if request.path in ['/api/health', '/api/refresh-token'] or request.path.startswith('/api/bilty'):
         return None
     
     print(f"🔍 Validating token for request: {request.method} {request.path}")
@@ -455,6 +457,96 @@ def generate_ewaybill_endpoint():
             "message": f"Internal server error: {str(e)}"
         }), 500
 
+# ============================================================
+# BILTY ENDPOINTS - Server-side validated bilty operations
+# ============================================================
+
+@app.route('/api/bilty/reference-data', methods=['GET'])
+def bilty_reference_data():
+    """
+    Single endpoint to preload ALL reference data for the bilty page.
+    Replaces 8 separate Supabase calls from the frontend.
+    Query Parameters:
+        - branch_id: User's branch UUID
+        - user_id: User's UUID
+    """
+    try:
+        branch_id = request.args.get('branch_id')
+        user_id = request.args.get('user_id')
+
+        if not branch_id or not user_id:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required parameters: branch_id and user_id"
+            }), 400
+
+        result = get_reference_data(branch_id, user_id)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            return jsonify(result), result.get("status_code", 500)
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
+
+@app.route('/api/bilty/save', methods=['POST'])
+def bilty_save():
+    """
+    Server-side validated bilty save.
+    Resolves city IDs to names on the server so PDF generation
+    never relies on frontend network calls.
+
+    Returns the saved bilty WITH resolved from_city and to_city objects.
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No data provided"
+            }), 400
+
+        result = save_bilty(data)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            return jsonify(result), result.get("status_code", 500)
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
+
+@app.route('/api/bilty/<bilty_id>', methods=['GET'])
+def bilty_get(bilty_id):
+    """
+    Fetch a bilty with resolved city names.
+    Use for PDF generation / reprinting — guaranteed correct city data.
+    """
+    try:
+        result = get_bilty_with_cities(bilty_id)
+
+        if result.get("status") == "success":
+            return jsonify(result), 200
+        else:
+            return jsonify(result), result.get("status_code", 500)
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Internal server error: {str(e)}"
+        }), 500
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """
@@ -498,6 +590,9 @@ if __name__ == "__main__":
     print(f"   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
     print(f"   - POST /api/generate-ewaybill")
     print(f"   - POST /api/refresh-token")
+    print(f"   - GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY")
+    print(f"   - POST /api/bilty/save")
+    print(f"   - GET  /api/bilty/<bilty_id>")
     print("=" * 70)
     print("💡 Token auto-refresh enabled - Server will run continuously!")
     print("=" * 70)

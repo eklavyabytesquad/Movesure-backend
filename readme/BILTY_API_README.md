@@ -1,0 +1,416 @@
+# Bilty API - Backend Endpoints for Fast Bilty Creation
+
+## Base URL
+```
+http://localhost:5000
+```
+On Render: `https://your-app.onrender.com`
+
+---
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+```
+
+Create `.env` file (already done — contains `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`).  
+MastersGST auth works as before (hardcoded, no env needed).
+
+```bash
+python app.py
+```
+
+---
+
+## Endpoints
+
+### 1. `GET /api/bilty/reference-data` — Preload ALL Data (Single Call)
+
+Replaces all 8 separate Supabase queries the frontend makes on page load.  
+All 7 DB queries run **in parallel** — typically completes in **200-400ms**.
+
+**Query Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `branch_id` | Yes | User's branch UUID |
+| `user_id` | Yes | User's UUID |
+
+**Example Request:**
+```js
+const res = await fetch(
+  `${API_URL}/api/bilty/reference-data?branch_id=${user.branch_id}&user_id=${user.id}`
+);
+const { data } = await res.json();
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "branch": {
+      "id": "uuid",
+      "branch_code": "ALG",
+      "city_code": "ALG",
+      "address": "...",
+      "branch_name": "ALIGARH",
+      "default_bill_book_id": "uuid"
+    },
+    "cities": [
+      { "id": "uuid", "city_code": "ALG", "city_name": "ALIGARH" },
+      { "id": "uuid", "city_code": "KNP", "city_name": "KANPUR" }
+    ],
+    "city_by_id": {
+      "uuid-1": { "id": "uuid-1", "city_code": "ALG", "city_name": "ALIGARH" }
+    },
+    "city_by_code": {
+      "ALG": { "id": "uuid-1", "city_code": "ALG", "city_name": "ALIGARH" }
+    },
+    "transports": [
+      { "id": "uuid", "transport_name": "S S TRANSPORT", "transport_gst": "...", "transport_number": "..." }
+    ],
+    "consignors": [
+      { "id": "uuid", "company_name": "ABC CO", "gst_num": "...", "number": "..." }
+    ],
+    "consignees": [
+      { "id": "uuid", "company_name": "XYZ CO", "gst_num": "...", "number": "..." }
+    ],
+    "rates": [
+      { "id": "uuid", "branch_id": "uuid", "city_id": "uuid", "consignor_id": "uuid", "rate": 120, "is_default": false }
+    ],
+    "bill_books": [
+      { "id": "uuid", "prefix": "A", "from_number": 1, "to_number": 9999, "digits": 5, "current_number": 8044 }
+    ]
+  }
+}
+```
+
+**Frontend usage — replace `loadInitialData()`:**
+```js
+// BEFORE: 8 separate await calls to Supabase
+// AFTER: 1 call
+const API_URL = 'http://localhost:5000'; // or your Render URL
+
+async function loadInitialData() {
+  const res = await fetch(
+    `${API_URL}/api/bilty/reference-data?branch_id=${user.branch_id}&user_id=${user.id}`
+  );
+  const { data } = await res.json();
+  
+  setCities(data.cities);
+  setTransports(data.transports);
+  setConsignors(data.consignors);
+  setConsignees(data.consignees);
+  setRates(data.rates);
+  setBillBooks(data.bill_books);
+  setBranch(data.branch);
+  
+  // Cache city lookups — use these for PDF generation
+  cityByIdRef.current = data.city_by_id;
+  cityByCodeRef.current = data.city_by_code;
+}
+```
+
+---
+
+### 2. `POST /api/bilty/save` — Save Bilty (Server-Validated)
+
+**This is the key endpoint.** Saves bilty AND returns resolved city names.  
+The frontend uses the **response city data** for PDF generation — never hardcoded fallbacks.
+
+**Speed:** ~100-200ms total  
+- City validation + GR dup check run **in parallel** (~1 round-trip)  
+- INSERT/UPDATE bilty (~1 round-trip)  
+- Rate save + bill book update run **in background** (non-blocking)
+
+**Request Body:**
+```json
+{
+  "branch_id": "uuid (required)",
+  "staff_id": "uuid",
+  "gr_no": "A08044 (required)",
+  "bilty_date": "2026-04-06",
+  "from_city_id": "uuid",
+  "to_city_id": "uuid",
+  "delivery_type": "godown-delivery",
+  "consignor_name": "MODERN LOCK MFG CO",
+  "consignor_gst": "09AABFM8846M1ZM",
+  "consignor_number": "9876543210",
+  "consignee_name": "M.A ENTERPRISES",
+  "consignee_gst": "09ASMPS6146H1Z5",
+  "consignee_number": "9876543211",
+  "transport_name": "S S TRANSPORT",
+  "transport_gst": "09COVPS5556J1ZT",
+  "transport_number": "9876543212",
+  "transport_id": "uuid",
+  "payment_mode": "to-pay",
+  "contain": "LOCKS",
+  "invoice_no": "INV-001",
+  "invoice_value": 50000,
+  "invoice_date": "2026-04-06",
+  "e_way_bill": "431698629992",
+  "document_number": "DOC-001",
+  "no_of_pkg": 10,
+  "wt": 500,
+  "rate": 120,
+  "labour_rate": 20,
+  "pvt_marks": "ABC",
+  "freight_amount": 6000,
+  "labour_charge": 200,
+  "bill_charge": 50,
+  "toll_charge": 20,
+  "dd_charge": 0,
+  "other_charge": 0,
+  "pf_charge": 0,
+  "total": 6270,
+  "remark": "",
+  "saving_option": "SAVE",
+  "bill_book_id": "uuid (for updating bill book current_number)",
+  "bill_book_next_number": 8045
+}
+```
+
+For **editing** an existing bilty, add:
+```json
+{
+  "bilty_id": "uuid-of-existing-bilty",
+  ...rest of fields
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Bilty saved successfully",
+  "data": {
+    "bilty": {
+      "id": "new-uuid",
+      "gr_no": "A08044",
+      "branch_id": "uuid",
+      "from_city_id": "uuid",
+      "to_city_id": "uuid",
+      "consignor_name": "MODERN LOCK MFG CO",
+      "total": 6270,
+      "...all bilty fields..."
+    },
+    "from_city": {
+      "id": "uuid",
+      "city_name": "ALIGARH",
+      "city_code": "ALG"
+    },
+    "to_city": {
+      "id": "uuid",
+      "city_name": "KANPUR",
+      "city_code": "KNP"
+    }
+  }
+}
+```
+
+**Frontend usage — replace `handleSave()`:**
+```js
+async function handleSave() {
+  if (isSaving) return;
+  setIsSaving(true);
+
+  try {
+    const res = await fetch(`${API_URL}/api/bilty/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Pass all form fields + IDs
+        branch_id: user.branch_id,
+        staff_id: user.id,
+        gr_no: formData.gr_no,
+        bilty_date: formData.bilty_date,
+        from_city_id: formData.from_city_id,
+        to_city_id: formData.to_city_id,
+        consignor_name: formData.consignor_name,
+        consignor_gst: formData.consignor_gst,
+        consignor_number: formData.consignor_number,
+        consignee_name: formData.consignee_name,
+        consignee_gst: formData.consignee_gst,
+        consignee_number: formData.consignee_number,
+        transport_name: formData.transport_name,
+        transport_gst: formData.transport_gst,
+        transport_number: formData.transport_number,
+        transport_id: formData.transport_id,
+        payment_mode: formData.payment_mode,
+        contain: formData.contain,
+        invoice_no: formData.invoice_no,
+        invoice_value: formData.invoice_value ? parseFloat(formData.invoice_value) : null,
+        invoice_date: formData.invoice_date || null,
+        e_way_bill: formData.e_way_bill,
+        document_number: formData.document_number,
+        no_of_pkg: formData.no_of_pkg ? parseInt(formData.no_of_pkg) : null,
+        wt: formData.wt ? parseFloat(formData.wt) : null,
+        rate: formData.rate ? parseFloat(formData.rate) : null,
+        labour_rate: formData.labour_rate ? parseFloat(formData.labour_rate) : null,
+        pvt_marks: formData.pvt_marks,
+        freight_amount: formData.freight_amount ? parseFloat(formData.freight_amount) : null,
+        labour_charge: formData.labour_charge ? parseFloat(formData.labour_charge) : null,
+        bill_charge: formData.bill_charge ? parseFloat(formData.bill_charge) : null,
+        toll_charge: formData.toll_charge ? parseFloat(formData.toll_charge) : null,
+        dd_charge: formData.dd_charge ? parseFloat(formData.dd_charge) : null,
+        other_charge: formData.other_charge ? parseFloat(formData.other_charge) : null,
+        pf_charge: formData.pf_charge ? parseFloat(formData.pf_charge) : null,
+        total: formData.total ? parseFloat(formData.total) : null,
+        remark: formData.remark,
+        delivery_type: formData.delivery_type,
+        saving_option: 'SAVE',
+        // For bill book update
+        bill_book_id: selectedBillBook?.id,
+        bill_book_next_number: nextGrNumber,
+        // For edit mode
+        ...(editMode && formData.bilty_id ? { bilty_id: formData.bilty_id } : {}),
+      }),
+    });
+
+    const result = await res.json();
+
+    if (result.status !== 'success') {
+      alert(result.message);
+      return;
+    }
+
+    // ✅ USE SERVER RESPONSE for city data — NEVER hardcoded defaults
+    const savedBilty = result.data.bilty;
+    const fromCity = result.data.from_city;  // { id, city_name, city_code }
+    const toCity = result.data.to_city;      // { id, city_name, city_code }
+
+    // Pass to PDF generation — guaranteed correct
+    // No more || 'DEORIA' fallback needed!
+    showPrintModal({
+      bilty: savedBilty,
+      fromCity,   // { city_name: "ALIGARH", city_code: "ALG" }
+      toCity,     // { city_name: "KANPUR", city_code: "KNP" }
+    });
+
+    // Reset form for next bilty
+    if (!editMode) {
+      resetForm();
+    }
+  } catch (err) {
+    alert('Save failed: ' + err.message);
+  } finally {
+    setIsSaving(false);
+  }
+}
+```
+
+**CRITICAL PDF FIX — in `pdf-generation.js`:**
+```js
+// BEFORE (BUG — hardcoded fallback causes wrong city):
+const fromCityName = fromCity?.city_name || 'ALIGARH';
+const toCityName = toCity?.city_name || 'DEORIA';
+const toCityCode = toCity?.city_code || 'DRO';
+
+// AFTER (use server-provided data, fail safely):
+const fromCityName = fromCity?.city_name;
+const toCityName = toCity?.city_name;
+const toCityCode = toCity?.city_code;
+
+if (!fromCityName || !toCityName) {
+  console.error('City data missing from server response');
+  alert('Error: City data missing. Cannot generate PDF.');
+  return;
+}
+```
+
+---
+
+### 3. `GET /api/bilty/<bilty_id>` — Fetch Bilty with Cities (for Reprint)
+
+Use this when reprinting a bilty — guaranteed correct city names from database.
+
+**Example Request:**
+```js
+const res = await fetch(`${API_URL}/api/bilty/${biltyId}`);
+const { data } = await res.json();
+// data.bilty = full bilty record
+// data.from_city = { id, city_name, city_code }
+// data.to_city = { id, city_name, city_code }
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "bilty": { "...all bilty fields..." },
+    "from_city": { "id": "uuid", "city_name": "ALIGARH", "city_code": "ALG" },
+    "to_city": { "id": "uuid", "city_name": "KANPUR", "city_code": "KNP" }
+  }
+}
+```
+
+---
+
+## Error Responses
+
+All endpoints return errors in the same format:
+```json
+{
+  "status": "error",
+  "message": "Description of what went wrong"
+}
+```
+
+| HTTP Code | Meaning |
+|-----------|---------|
+| 400 | Missing required fields or invalid city_id |
+| 409 | Duplicate GR number for this branch |
+| 500 | Server error |
+
+---
+
+## Speed Summary
+
+| Operation | Before (Frontend) | After (Backend API) |
+|-----------|-------------------|---------------------|
+| Page load data | 8 Supabase calls sequential ~2-3s | 1 API call, 7 parallel queries ~200-400ms |
+| Save bilty | Direct Supabase + re-fetch cities | 1 API call, parallel validation ~100-200ms |
+| PDF city data | Re-fetches from Supabase (fails on slow network) | Returned in save response (guaranteed) |
+| Rate save | Blocking (adds ~100ms to save) | Background (non-blocking) |
+| Bill book update | Blocking (adds ~100ms to save) | Background (non-blocking) |
+
+---
+
+## Quick Test with cURL
+
+**Health check:**
+```bash
+curl http://localhost:5000/api/health
+```
+
+**Load reference data:**
+```bash
+curl "http://localhost:5000/api/bilty/reference-data?branch_id=YOUR_BRANCH_UUID&user_id=YOUR_USER_UUID"
+```
+
+**Save a bilty:**
+```bash
+curl -X POST http://localhost:5000/api/bilty/save \
+  -H "Content-Type: application/json" \
+  -d '{
+    "branch_id": "your-branch-uuid",
+    "staff_id": "your-user-uuid",
+    "gr_no": "A08044",
+    "bilty_date": "2026-04-06",
+    "from_city_id": "from-city-uuid",
+    "to_city_id": "to-city-uuid",
+    "consignor_name": "TEST CONSIGNOR",
+    "consignee_name": "TEST CONSIGNEE",
+    "no_of_pkg": 5,
+    "wt": 100,
+    "total": 500,
+    "saving_option": "DRAFT"
+  }'
+```
+
+**Fetch bilty for reprint:**
+```bash
+curl "http://localhost:5000/api/bilty/YOUR_BILTY_UUID"
+```

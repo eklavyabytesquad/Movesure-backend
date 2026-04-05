@@ -138,6 +138,14 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
+# Project-specific
+auth/jwt_token.json
+.dist/
+*_response.json
+*_debug.txt
+*.http
+.env
+
 # Project specific
 auth_token.json
 *.log
