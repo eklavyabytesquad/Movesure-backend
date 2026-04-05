@@ -23,6 +23,12 @@ from services.generate_ewaybill_service import generate_ewaybill
 from services.reference_data_service import get_reference_data
 from services.bilty_save_service import save_bilty, get_bilty_with_cities
 from services.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates
+from services.gr_reservation_service import (
+    get_next_available_grs, reserve_gr, release_reservation,
+    complete_reservation, extend_reservation, get_branch_gr_status,
+    release_all_user_reservations, fix_gr_sequence, cleanup_expired_reservations,
+    validate_bill_book,
+)
 
 
 @asynccontextmanager
@@ -375,6 +381,141 @@ async def all_rates(consignor_id: str = Query(...), branch_id: str = Query(...))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# GR RESERVATION ENDPOINTS - Atomic GR number management
+# ============================================================
+
+
+@app.get("/api/bilty/gr/next-available")
+async def gr_next_available(
+    bill_book_id: str = Query(...),
+    branch_id: str = Query(...),
+    count: int = Query(5),
+):
+    """Get next N available GR numbers (skips reserved + used)."""
+    try:
+        result = await _run(get_next_available_grs, bill_book_id, branch_id, count)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/reserve")
+async def gr_reserve(request: Request):
+    """Reserve the next available GR or a specific GR number."""
+    try:
+        data = await request.json()
+        for f in ["bill_book_id", "branch_id", "user_id", "user_name"]:
+            if not data.get(f):
+                return JSONResponse(content={"status": "error", "message": f"Missing field: {f}"}, status_code=400)
+        result = await _run(
+            reserve_gr,
+            data["bill_book_id"], data["branch_id"],
+            data["user_id"], data["user_name"],
+            data.get("gr_number"),  # optional — specific number
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/release/{reservation_id}")
+async def gr_release(request: Request, reservation_id: str = Path(...)):
+    """Release a reservation (user no longer needs it)."""
+    try:
+        data = await request.json()
+        if not data.get("user_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing user_id"}, status_code=400)
+        result = await _run(release_reservation, reservation_id, data["user_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/complete/{reservation_id}")
+async def gr_complete(request: Request, reservation_id: str = Path(...)):
+    """Complete a reservation after bilty save — marks used + advances current_number."""
+    try:
+        data = await request.json()
+        if not data.get("user_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing user_id"}, status_code=400)
+        result = await _run(complete_reservation, reservation_id, data["user_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/extend/{reservation_id}")
+async def gr_extend(request: Request, reservation_id: str = Path(...)):
+    """Heartbeat — extend reservation TTL by 30 more minutes."""
+    try:
+        data = await request.json()
+        if not data.get("user_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing user_id"}, status_code=400)
+        result = await _run(extend_reservation, reservation_id, data["user_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty/gr/status/{branch_id}")
+async def gr_status(branch_id: str = Path(...), bill_book_id: str = Query(None)):
+    """Live status: all active reservations + recent bilties for a branch."""
+    try:
+        result = await _run(get_branch_gr_status, branch_id, bill_book_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/release-all")
+async def gr_release_all(request: Request):
+    """Release ALL reservations for a user in a branch (logout / page close)."""
+    try:
+        data = await request.json()
+        for f in ["user_id", "branch_id"]:
+            if not data.get(f):
+                return JSONResponse(content={"status": "error", "message": f"Missing field: {f}"}, status_code=400)
+        result = await _run(release_all_user_reservations, data["user_id"], data["branch_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/fix-sequence")
+async def gr_fix_sequence(request: Request):
+    """Fix bill book current_number — auto-detect or manually set."""
+    try:
+        data = await request.json()
+        if not data.get("bill_book_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing bill_book_id"}, status_code=400)
+        result = await _run(fix_gr_sequence, data["bill_book_id"], data.get("correct_number"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/gr/cleanup")
+async def gr_cleanup(request: Request):
+    """Expire stale reservations. Can be called periodically or on-demand."""
+    try:
+        data = await request.json() if await request.body() else {}
+        result = await _run(cleanup_expired_reservations, data.get("branch_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty/gr/validate/{bill_book_id}")
+async def gr_validate_bill_book(bill_book_id: str = Path(...)):
+    """Validate & auto-correct bill book current_number. Call on every bill book load/edit."""
+    try:
+        result = await _run(validate_bill_book, bill_book_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 # ============================================================
