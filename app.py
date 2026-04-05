@@ -343,15 +343,6 @@ async def bilty_save(request: Request):
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
-@app.get("/api/bilty/{bilty_id}")
-async def bilty_get(bilty_id: str = Path(...)):
-    try:
-        result = await _run(get_bilty_with_cities, bilty_id)
-        return _response(result)
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
-
-
 # ============================================================
 # RATE ENDPOINTS - Consignor profile rates & default rates
 # ============================================================
@@ -638,6 +629,20 @@ async def master_bulk_delete(request: Request, entity: str = Path(...)):
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# BILTY GET (catch-all — must be AFTER all /api/bilty/... routes)
+# ============================================================
+
+
+@app.get("/api/bilty/{bilty_id}")
+async def bilty_get(bilty_id: str = Path(...)):
+    try:
+        result = await _run(get_bilty_with_cities, bilty_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
 # ============================================================
