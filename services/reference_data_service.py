@@ -36,7 +36,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
         def fetch_transports():
             return (
                 sb.table("transports")
-                .select("id, transport_name, city_id, city_name, gst_number, mob_number, address, branch_owner_name, transport_admin_id")
+                .select("id, transport_name, city_id, city_name, gst_number, mob_number, address, branch_owner_name, transport_admin_id, is_prior")
                 .execute()
             ).data or []
 
@@ -97,12 +97,15 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
 
         # Build transport lookup by city_id
         # Key = city_id, Value = list of transports for that city
+        # is_prior=true transport comes first (auto-selected by frontend)
         transports = results["transports"]
         transport_by_city_id = {}
         for t in transports:
             cid = t.get("city_id")
             if cid:
                 transport_by_city_id.setdefault(cid, []).append(t)
+        for cid in transport_by_city_id:
+            transport_by_city_id[cid].sort(key=lambda t: not t.get("is_prior", False))
 
         return {
             "status": "success",

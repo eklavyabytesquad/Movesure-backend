@@ -70,12 +70,12 @@ const { data } = await res.json();
       "ALG": { "id": "uuid-1", "city_code": "ALG", "city_name": "ALIGARH" }
     },
     "transports": [
-      { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "uuid", "city_name": "KANPUR", "gst_number": "09COVPS5556J1ZT", "mob_number": "7668291228", "address": "TRANSPORT NAGAR", "branch_owner_name": "RAJEEV" }
+      { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "uuid", "city_name": "KANPUR", "gst_number": "09COVPS5556J1ZT", "mob_number": "7668291228", "address": "TRANSPORT NAGAR", "branch_owner_name": "RAJEEV", "is_prior": true }
     ],
     "transport_by_city_id": {
       "city-uuid-1": [
-        { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "..." },
-        { "id": "uuid", "transport_name": "VIJAY TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "..." }
+        { "id": "uuid", "transport_name": "S S TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "...", "is_prior": true },
+        { "id": "uuid", "transport_name": "VIJAY TRANSPORT", "city_id": "city-uuid-1", "city_name": "KANPUR", "gst_number": "...", "mob_number": "...", "is_prior": false }
       ]
     },
     "consignors": [
@@ -130,12 +130,13 @@ function onToCityCodeChange(cityCode) {
   setFormData(prev => ({ ...prev, to_city_id: city.id }));
   
   // Auto-fill transports for this city
+  // NOTE: Array is sorted by priority — is_prior=true transport comes FIRST
   const cityTransports = transportByCityIdRef.current[city.id] || [];
   setFilteredTransports(cityTransports);
   
-  // If only 1 transport, auto-select it
-  if (cityTransports.length === 1) {
-    const t = cityTransports[0];
+  // Auto-select priority transport (first in array) or only transport
+  if (cityTransports.length >= 1) {
+    const t = cityTransports[0]; // Priority transport (is_prior=true) is always first
     setFormData(prev => ({
       ...prev,
       to_city_id: city.id,
