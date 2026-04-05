@@ -29,6 +29,10 @@ from services.gr_reservation_service import (
     release_all_user_reservations, fix_gr_sequence, cleanup_expired_reservations,
     validate_bill_book,
 )
+from services.master_data_service import (
+    list_records, get_record, create_record, update_record, delete_record,
+    bulk_update, bulk_create, bulk_delete,
+)
 
 
 @asynccontextmanager
@@ -513,6 +517,124 @@ async def gr_validate_bill_book(bill_book_id: str = Path(...)):
     """Validate & auto-correct bill book current_number. Call on every bill book load/edit."""
     try:
         result = await _run(validate_bill_book, bill_book_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# MASTER DATA CRUD — cities, transports, consignors, consignees, rates
+# ============================================================
+
+
+@app.get("/api/bilty/master/{entity}")
+async def master_list(
+    entity: str = Path(...),
+    page: int = Query(1),
+    page_size: int = Query(40),
+    search: str = Query(None),
+    branch_id: str = Query(None),
+    city_id: str = Query(None),
+    consignor_id: str = Query(None),
+):
+    """Paginated list. 40 rows/page. Pass search for text filter."""
+    try:
+        filters = {}
+        if branch_id:
+            filters["branch_id"] = branch_id
+        if city_id:
+            filters["city_id"] = city_id
+        if consignor_id:
+            filters["consignor_id"] = consignor_id
+        result = await _run(list_records, entity, page, page_size, search, filters if filters else None)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty/master/{entity}/{record_id}")
+async def master_get(entity: str = Path(...), record_id: str = Path(...)):
+    """Get a single record by ID."""
+    try:
+        result = await _run(get_record, entity, record_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/master/{entity}")
+async def master_create(request: Request, entity: str = Path(...)):
+    """Create a single record."""
+    try:
+        data = await request.json()
+        user_id = data.pop("user_id", None)
+        result = await _run(create_record, entity, data, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/bilty/master/{entity}/{record_id}")
+async def master_update(request: Request, entity: str = Path(...), record_id: str = Path(...)):
+    """Update a single record."""
+    try:
+        data = await request.json()
+        user_id = data.pop("user_id", None)
+        result = await _run(update_record, entity, record_id, data, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/bilty/master/{entity}/{record_id}")
+async def master_delete(entity: str = Path(...), record_id: str = Path(...)):
+    """Delete a single record."""
+    try:
+        result = await _run(delete_record, entity, record_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/master/{entity}/bulk-create")
+async def master_bulk_create(request: Request, entity: str = Path(...)):
+    """Create multiple records at once."""
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        records = data.get("records", [])
+        if not records:
+            return JSONResponse(content={"status": "error", "message": "records array is required"}, status_code=400)
+        result = await _run(bulk_create, entity, records, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/bilty/master/{entity}/bulk-update")
+async def master_bulk_update(request: Request, entity: str = Path(...)):
+    """Update multiple records. Each item must have 'id' + fields to change."""
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        updates = data.get("updates", [])
+        if not updates:
+            return JSONResponse(content={"status": "error", "message": "updates array is required"}, status_code=400)
+        result = await _run(bulk_update, entity, updates, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/bilty/master/{entity}/bulk-delete")
+async def master_bulk_delete(request: Request, entity: str = Path(...)):
+    """Delete multiple records by IDs."""
+    try:
+        data = await request.json()
+        ids = data.get("ids", [])
+        if not ids:
+            return JSONResponse(content={"status": "error", "message": "ids array is required"}, status_code=400)
+        result = await _run(bulk_delete, entity, ids)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
