@@ -755,7 +755,7 @@ async def transit_available(
 async def transit_bilties(
     challan_no: str = Path(...),
     page: int = Query(1),
-    page_size: int = Query(50),
+    page_size: int = Query(10000),
     search: str = Query(None),
 ):
     try:

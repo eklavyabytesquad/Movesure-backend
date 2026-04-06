@@ -151,7 +151,7 @@ def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
 # ── TRANSIT BILTIES (for a challan) ──────────────────────────
 
 def get_transit_bilties(challan_no: str, page: int = 1,
-                        page_size: int = PAGE_SIZE, search: str = None) -> dict:
+                        page_size: int = 10000, search: str = None) -> dict:
     """Get all bilties assigned to a specific challan."""
     try:
         sb = get_supabase()

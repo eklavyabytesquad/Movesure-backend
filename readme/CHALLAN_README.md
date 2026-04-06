@@ -22,7 +22,7 @@ Manages the **full challan lifecycle**: challan book number series → challan c
 | 4 sequential requests on page load | Single RPC `get_challan_page_init` replaces init + list + available (4→2 requests) |
 | Dispatched challans not visible on init | Returns ALL active challans (dispatched + non-dispatched), sorted non-dispatched first |
 | Slow init (9+ DB round-trips) | Single Supabase RPC — 1 DB call, JOINs for name resolution, includes available bilties |
-| Challan books from all branches showing | Filtered to `branch_1/2/3 = branch_id` — only books assigned to user's branch |
+| Challan books from all branches showing | Filtered to `branch_1 = branch_id` — only books where user's branch is the sender |
 | Only 50 challans returned | Now returns ALL challans (lightweight: no bilty details per challan) |
 
 ---
@@ -88,7 +88,7 @@ const { data } = await res.json();
 
 **Key points:**
 - **Challans** — ALL active challans (no limit), lightweight fields only (challan_no, dispatch details, bilty count, truck/driver/owner names). Sorted: non-dispatched first, then dispatched, both by `created_at DESC`.
-- **Challan books** — filtered to `branch_1/2/3 = branch_id`. User only sees their branch's books.
+- **Challan books** — filtered to `branch_1 = branch_id`. User only sees books where their branch is the sender (first branch).
 - **Available bilties** — bilties not in any challan, filtered by `branch_id`. Each row has `bilty_type` (`"reg"` or `"mnl"`) and `source_table`.
 - **Names resolved via SQL JOINs** — `truck_number`, `driver_name`, `owner_name`, `created_by` (user name) — no extra API calls.
 
@@ -599,7 +599,7 @@ BEGIN
         FROM challan_books
         WHERE is_active = true
           AND is_completed = false
-          AND (branch_1 = p_branch_id OR branch_2 = p_branch_id OR branch_3 = p_branch_id)
+          AND branch_1 = p_branch_id
         ORDER BY created_at DESC
       ) cb_sub
     ), '[]'::json),
@@ -698,7 +698,7 @@ $$;
 **What the RPC does in 1 call:**
 | Dataset | Filter | JOINs / Notes |
 |---------|--------|---------------|
-| `challan_books` | `is_active=true`, `is_completed=false`, `branch_1/2/3 = branch_id` | none |
+| `challan_books` | `is_active=true`, `is_completed=false`, `branch_1 = branch_id` | none |
 | `challans` | `branch_id`, `is_active=true`, ALL (no limit), non-dispatched first | trucks → truck_number, staff → driver_name/owner_name, users → created_by name |
 | `available_regular` | `branch_id`, `is_active=true`, not CANCEL, NOT EXISTS transit_details | bilty table — full row details |
 | `available_station` | `branch_id`, NOT EXISTS transit_details, NOT EXISTS bilty (dedup) | station_bilty_summary — full row details |
