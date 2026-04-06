@@ -24,6 +24,9 @@ Manages the **full challan lifecycle**: challan book number series → challan c
 | Slow init (9+ DB round-trips) | Single Supabase RPC — 1 DB call, JOINs for name resolution, includes available bilties |
 | Challan books from all branches showing | Filtered to `branch_1 = branch_id` — only books where user's branch is the sender |
 | Only 50 challans returned | Now returns ALL challans (lightweight: no bilty details per challan) |
+| Only 50 transit bilties returned | Transit bilties endpoint now defaults to `page_size=10000` — returns ALL bilties in a challan |
+| Available bilties filtered by branch | Init RPC now returns available bilties from ALL branches (no `branch_id` filter) |
+| `contain` field missing from available bilties | RPC now includes `b.contain` (goods description) for regular bilties |
 
 ---
 
@@ -89,7 +92,7 @@ const { data } = await res.json();
 **Key points:**
 - **Challans** — ALL active challans (no limit), lightweight fields only (challan_no, dispatch details, bilty count, truck/driver/owner names). Sorted: non-dispatched first, then dispatched, both by `created_at DESC`.
 - **Challan books** — filtered to `branch_1 = branch_id`. User only sees books where their branch is the sender (first branch).
-- **Available bilties** — bilties not in any challan, filtered by `branch_id`. Each row has `bilty_type` (`"reg"` or `"mnl"`) and `source_table`.
+- **Available bilties** — bilties not in any challan, from **ALL branches** (no branch filter). Each row has `bilty_type` (`"reg"` or `"mnl"`), `source_table`, and `contain` (goods description, regular bilties only).
 - **Names resolved via SQL JOINs** — `truck_number`, `driver_name`, `owner_name`, `created_by` (user name) — no extra API calls.
 
 #### Frontend Transform
@@ -322,17 +325,22 @@ Each row also has `bilty_type` field: `"reg"` (from bilty table) or `"mnl"` (fro
 
 ### 4. Transit — Bilties in a Challan
 
+Returns **ALL** bilties in a challan (default `page_size=10000` — no pagination needed for typical challans).
+
 ```js
 const res = await fetch(
-  `${API}/api/challan/transit/bilties/${challanNo}?page=1`
+  `${API}/api/challan/transit/bilties/${challanNo}`
 );
 const { data } = await res.json();
-// data.rows = [{ id, challan_no, gr_no, consignor_name, consignee_name, source_table, ... }]
+// data.rows = [{ id, challan_no, gr_no, consignor_name, consignee_name, contain, source_table, ... }]
+// data.total = 86  ← total bilties in this challan
 ```
 
 Each transit row includes `bilty_type`: `"reg"` for bilty-table rows, `"mnl"` for station_bilty_summary rows.
 
-Each transit row is enriched with bilty details (consignor, consignee, transport, weight, packages, etc.) from the appropriate source table.
+Each transit row is enriched with bilty details (consignor, consignee, transport, weight, packages, **contain** (goods description), etc.) from the appropriate source table.
+
+**`contain` field:** For regular bilties (`bilty_type: "reg"`), mapped from `bilty.contain`. For station bilties (`bilty_type: "mnl"`), mapped from `station_bilty_summary.contents`. Both are returned as `contain` in the response for consistent frontend usage.
 
 ---
 
@@ -628,7 +636,7 @@ BEGIN
       ) ch_sub
     ), '[]'::json),
 
-    -- Available regular bilties (NOT in any transit, active, not CANCEL)
+    -- Available regular bilties: ALL branches (no branch filter)
     'available_regular', COALESCE((
       SELECT json_agg(row_to_json(ar_sub))
       FROM (
@@ -640,10 +648,9 @@ BEGIN
                b.labour_charge, b.bill_charge, b.toll_charge, b.dd_charge,
                b.other_charge, b.pf_charge, b.total,
                b.from_city_id, b.to_city_id, b.e_way_bill, b.pvt_marks,
-               b.remark, b.saving_option, b.is_active
+               b.contain, b.remark, b.saving_option, b.is_active
         FROM bilty b
-        WHERE b.branch_id = p_branch_id
-          AND b.is_active = true
+        WHERE b.is_active = true
           AND b.consignor_name != 'CANCEL BILTY'
           AND NOT EXISTS (
             SELECT 1 FROM transit_details td WHERE td.gr_no = b.gr_no
@@ -652,7 +659,7 @@ BEGIN
       ) ar_sub
     ), '[]'::json),
 
-    -- Available station bilties (NOT in transit, NOT duplicated in bilty table)
+    -- Available station bilties: ALL branches (no branch filter)
     'available_station', COALESCE((
       SELECT json_agg(row_to_json(as_sub))
       FROM (
@@ -662,8 +669,7 @@ BEGIN
                s.transport_id, s.transport_name, s.transport_gst, s.city_id,
                s.created_at, s.updated_at
         FROM station_bilty_summary s
-        WHERE s.branch_id = p_branch_id
-          AND NOT EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM transit_details td WHERE td.gr_no = s.gr_no
           )
           AND NOT EXISTS (
@@ -700,8 +706,8 @@ $$;
 |---------|--------|---------------|
 | `challan_books` | `is_active=true`, `is_completed=false`, `branch_1 = branch_id` | none |
 | `challans` | `branch_id`, `is_active=true`, ALL (no limit), non-dispatched first | trucks → truck_number, staff → driver_name/owner_name, users → created_by name |
-| `available_regular` | `branch_id`, `is_active=true`, not CANCEL, NOT EXISTS transit_details | bilty table — full row details |
-| `available_station` | `branch_id`, NOT EXISTS transit_details, NOT EXISTS bilty (dedup) | station_bilty_summary — full row details |
+| `available_regular` | `is_active=true`, not CANCEL, NOT EXISTS transit_details (ALL branches) | bilty table — full row details incl. `contain` |
+| `available_station` | NOT EXISTS transit_details, NOT EXISTS bilty (dedup) (ALL branches) | station_bilty_summary — full row details |
 | `branches` | all | none |
 | `cities` | all | none |
 | `permanent_details` | all | none |
