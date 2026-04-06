@@ -28,7 +28,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── AVAILABLE BILTIES ─────────────────────────────────────────
+# ── AVAILABLE BILTIES (via Supabase RPC) ──────────────────────
 
 def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
                           search: str = None, payment_mode: str = None,
@@ -36,111 +36,97 @@ def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
                           branch_id: str = None) -> dict:
     """
     Get bilties NOT assigned to any active transit.
-    Merges from both 'bilty' and 'station_bilty_summary' tables.
-    source: 'bilty' | 'station' | None (both)
+    Uses Supabase RPC `get_available_gr_numbers` for the heavy NOT-EXISTS
+    check, then fetches full details only for the current page of results.
     """
     try:
         sb = get_supabase()
 
-        regular_bilties = []
-        station_bilties = []
+        # 1. Call RPC — single DB query does the NOT-EXISTS join
+        all_available = sb.rpc("get_available_gr_numbers", {
+            "p_limit": 100000,
+            "p_offset": 0,
+        }).execute()
+        rows = all_available.data or []
 
-        # 1a. Fetch candidate bilties from both tables first
-        raw_regular = []
-        if source != "station":
-            bq = sb.table("bilty").select(
-                "id, gr_no, branch_id, bilty_date, delivery_type, "
-                "consignor_name, consignor_gst, consignor_number, "
-                "consignee_name, consignee_gst, consignee_number, "
-                "transport_name, transport_gst, transport_number, transport_id, "
-                "payment_mode, no_of_pkg, wt, rate, freight_amount, "
-                "labour_charge, bill_charge, toll_charge, dd_charge, other_charge, pf_charge, total, "
-                "from_city_id, to_city_id, e_way_bill, pvt_marks, remark, "
-                "saving_option, is_active"
-            ).eq("is_active", True)
+        # 2. Apply source filter
+        if source == "bilty":
+            rows = [r for r in rows if r["source_table"] == "bilty"]
+        elif source == "station":
+            rows = [r for r in rows if r["source_table"] == "station_bilty_summary"]
 
-            if branch_id:
-                bq = bq.eq("branch_id", branch_id)
-            if search:
-                bq = bq.or_(
-                    f"gr_no.ilike.%{search}%,"
-                    f"consignor_name.ilike.%{search}%,"
-                    f"consignee_name.ilike.%{search}%,"
-                    f"transport_name.ilike.%{search}%"
-                )
-            if payment_mode:
-                bq = bq.eq("payment_mode", payment_mode)
-            if city_id:
-                bq = bq.eq("to_city_id", city_id)
+        # Build GR→source map for later
+        gr_source = {r["gr_no"]: r["source_table"] for r in rows}
+        bilty_grs = [gr for gr, src in gr_source.items() if src == "bilty"]
+        station_grs = [gr for gr, src in gr_source.items() if src == "station_bilty_summary"]
 
-            bq = bq.order("gr_no")
-            b_resp = bq.execute()
-            raw_regular = [r for r in (b_resp.data or []) if r.get("consignor_name") != "CANCEL BILTY"]
+        # 3. Fetch full details for bilty GRs
+        bilty_detail_map = {}
+        if bilty_grs:
+            for i in range(0, len(bilty_grs), 500):
+                chunk = bilty_grs[i:i + 500]
+                bq = sb.table("bilty").select(
+                    "id, gr_no, branch_id, bilty_date, delivery_type, "
+                    "consignor_name, consignor_gst, consignor_number, "
+                    "consignee_name, consignee_gst, consignee_number, "
+                    "transport_name, transport_gst, transport_number, transport_id, "
+                    "payment_mode, no_of_pkg, wt, rate, freight_amount, "
+                    "labour_charge, bill_charge, toll_charge, dd_charge, other_charge, pf_charge, total, "
+                    "from_city_id, to_city_id, e_way_bill, pvt_marks, remark, "
+                    "saving_option, is_active"
+                ).in_("gr_no", chunk).eq("is_active", True).execute()
+                for b in (bq.data or []):
+                    if b.get("consignor_name") != "CANCEL BILTY":
+                        b["source_table"] = "bilty"
+                        bilty_detail_map[b["gr_no"]] = b
 
-        raw_station = []
-        if source != "bilty":
-            sq = sb.table("station_bilty_summary").select(
-                "id, gr_no, station, consignor, consignee, contents, "
-                "no_of_packets, weight, payment_status, amount, pvt_marks, "
-                "delivery_type, staff_id, branch_id, e_way_bill, "
-                "transport_id, transport_name, transport_gst, city_id, "
-                "created_at, updated_at"
-            )
+        # 4. Fetch full details for station GRs
+        station_detail_map = {}
+        if station_grs:
+            for i in range(0, len(station_grs), 500):
+                chunk = station_grs[i:i + 500]
+                sq = sb.table("station_bilty_summary").select(
+                    "id, gr_no, station, consignor, consignee, contents, "
+                    "no_of_packets, weight, payment_status, amount, pvt_marks, "
+                    "delivery_type, staff_id, branch_id, e_way_bill, "
+                    "transport_id, transport_name, transport_gst, city_id, "
+                    "created_at, updated_at"
+                ).in_("gr_no", chunk).execute()
+                for s in (sq.data or []):
+                    s["source_table"] = "station_bilty_summary"
+                    station_detail_map[s["gr_no"]] = s
 
-            if branch_id:
-                sq = sq.eq("branch_id", branch_id)
-            if search:
-                sq = sq.or_(
-                    f"gr_no.ilike.%{search}%,"
-                    f"consignor.ilike.%{search}%,"
-                    f"consignee.ilike.%{search}%,"
-                    f"transport_name.ilike.%{search}%"
-                )
-            if payment_mode:
-                sq = sq.eq("payment_status", payment_mode)
-            if city_id:
-                sq = sq.eq("city_id", city_id)
+        # 5. Merge: build final list preserving RPC order (sorted by gr_no)
+        merged = []
+        for r in rows:
+            gr = r["gr_no"]
+            detail = bilty_detail_map.get(gr) or station_detail_map.get(gr)
+            if detail:
+                merged.append(detail)
 
-            sq = sq.order("gr_no")
-            s_resp = sq.execute()
-            raw_station = s_resp.data or []
-
-        # 1b. Collect all candidate GR numbers, then batch-check transit_details
-        all_grs = [r["gr_no"] for r in raw_regular] + [r["gr_no"] for r in raw_station]
-        all_grs = list(set(all_grs))
-
-        in_transit_grs = set()
-        # Batch check in chunks of 200 to stay within URL/query limits
-        for i in range(0, len(all_grs), 200):
-            chunk = all_grs[i:i + 200]
-            t_resp = sb.table("transit_details").select("gr_no").in_("gr_no", chunk).execute()
-            in_transit_grs.update(r["gr_no"] for r in (t_resp.data or []))
-
-        # 2a. Filter regular bilties
-        for r in raw_regular:
-            if r["gr_no"] not in in_transit_grs:
-                r["source_table"] = "bilty"
-                regular_bilties.append(r)
-
-        # 2b. Filter station bilties
-        for r in raw_station:
-            if r["gr_no"] not in in_transit_grs:
-                r["source_table"] = "station_bilty_summary"
-                station_bilties.append(r)
-
-        # 3. Merge & deduplicate (prefer regular bilty if same gr_no)
-        regular_grs = {b["gr_no"] for b in regular_bilties}
-        merged = regular_bilties[:]
-        for sb_row in station_bilties:
-            if sb_row["gr_no"] not in regular_grs:
-                merged.append(sb_row)
-
-        # Sort by gr_no
-        merged.sort(key=lambda x: x.get("gr_no", ""))
+        # 6. Apply client-side filters (branch, search, payment, city)
+        if branch_id:
+            merged = [r for r in merged if r.get("branch_id") == branch_id]
+        if search:
+            s_lower = search.lower()
+            merged = [r for r in merged if (
+                s_lower in (r.get("gr_no") or "").lower()
+                or s_lower in (r.get("consignor_name") or r.get("consignor") or "").lower()
+                or s_lower in (r.get("consignee_name") or r.get("consignee") or "").lower()
+                or s_lower in (r.get("transport_name") or "").lower()
+            )]
+        if payment_mode:
+            merged = [r for r in merged if
+                      r.get("payment_mode") == payment_mode or r.get("payment_status") == payment_mode]
+        if city_id:
+            merged = [r for r in merged if
+                      r.get("to_city_id") == city_id or r.get("city_id") == city_id]
 
         total = len(merged)
+        regular_count = sum(1 for r in merged if r.get("source_table") == "bilty")
+        station_count = total - regular_count
 
-        # Paginate in-memory
+        # 7. Paginate
         offset = (page - 1) * page_size
         page_rows = merged[offset: offset + page_size]
 
@@ -152,8 +138,8 @@ def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
                 "page_size": page_size,
                 "total": total,
                 "has_more": (offset + page_size) < total,
-                "regular_count": len(regular_bilties),
-                "station_count": len([s for s in station_bilties if s["gr_no"] not in regular_grs]),
+                "regular_count": regular_count,
+                "station_count": station_count,
             },
         }
     except Exception as e:
