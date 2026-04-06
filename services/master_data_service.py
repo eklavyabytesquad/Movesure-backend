@@ -10,7 +10,7 @@ PAGE_SIZE = 40  # default rows per page
 
 
 # ── Table config ──────────────────────────────────────────────
-# Maps entity name → { table, columns (for select), search_cols, order }
+# Maps entity name → { table, columns (for select), search_cols, order, pk }
 
 TABLE_CONFIG = {
     "cities": {
@@ -18,34 +18,74 @@ TABLE_CONFIG = {
         "columns": "id, city_code, city_name, created_by, updated_by, created_at, updated_at",
         "search_cols": ["city_code", "city_name"],
         "order": "city_name",
+        "pk": "id",
     },
     "transports": {
         "table": "transports",
         "columns": "id, transport_name, city_id, city_name, address, gst_number, mob_number, branch_owner_name, website, transport_admin_id, is_prior, created_by, updated_by, created_at, updated_at",
         "search_cols": ["transport_name", "city_name", "gst_number"],
         "order": "transport_name",
+        "pk": "id",
+    },
+    "transport_admin": {
+        "table": "transport_admin",
+        "columns": "transport_id, transport_name, gstin, hub_mobile_number, owner_name, website, address, sample_ref_image, sample_challan_image, created_by, updated_by, created_at, updated_at",
+        "search_cols": ["transport_name", "gstin", "owner_name"],
+        "order": "transport_name",
+        "pk": "transport_id",
     },
     "consignors": {
         "table": "consignors",
         "columns": "id, company_name, company_add, number, gst_num, adhar, pan, created_by, updated_by, created_at, updated_at",
         "search_cols": ["company_name", "gst_num", "number"],
         "order": "company_name",
+        "pk": "id",
     },
     "consignees": {
         "table": "consignees",
         "columns": "id, company_name, company_add, number, gst_num, adhar, pan, created_by, updated_by, created_at, updated_at",
         "search_cols": ["company_name", "gst_num", "number"],
         "order": "company_name",
+        "pk": "id",
     },
     "rates": {
         "table": "rates",
         "columns": "id, branch_id, city_id, consignor_id, rate, is_default, created_by, updated_by, created_at, updated_at",
         "search_cols": [],
         "order": "rate",
+        "pk": "id",
     },
 }
 
 VALID_ENTITIES = set(TABLE_CONFIG.keys())
+
+
+# ── Resolve user UUIDs → names ────────────────────────────────
+
+def _resolve_user_names(rows: list) -> list:
+    """Replace created_by / updated_by UUIDs with user names."""
+    if not rows:
+        return rows
+    user_ids = set()
+    for r in rows:
+        for field in ("created_by", "updated_by"):
+            val = r.get(field)
+            if val and isinstance(val, str) and len(val) > 20:
+                user_ids.add(val)
+    if not user_ids:
+        return rows
+    try:
+        sb = get_supabase()
+        resp = sb.table("users").select("id, name").in_("id", list(user_ids)).execute()
+        name_map = {u["id"]: u["name"] or u["id"] for u in (resp.data or [])}
+    except Exception:
+        return rows
+    for r in rows:
+        for field in ("created_by", "updated_by"):
+            val = r.get(field)
+            if val and val in name_map:
+                r[field] = name_map[val]
+    return rows
 
 
 def _now():
@@ -83,7 +123,7 @@ def list_records(entity: str, page: int = 1, page_size: int = PAGE_SIZE,
         query = query.order(cfg["order"]).range(offset, offset + page_size - 1)
 
         resp = query.execute()
-        rows = resp.data or []
+        rows = _resolve_user_names(resp.data or [])
         total = resp.count if resp.count is not None else len(rows)
 
         return {
@@ -107,9 +147,13 @@ def get_record(entity: str, record_id: str) -> dict:
         return {"status": "error", "message": f"Invalid entity: {entity}", "status_code": 400}
     try:
         cfg = TABLE_CONFIG[entity]
+        pk = cfg["pk"]
         sb = get_supabase()
-        resp = sb.table(cfg["table"]).select(cfg["columns"]).eq("id", record_id).single().execute()
-        return {"status": "success", "data": resp.data}
+        resp = sb.table(cfg["table"]).select(cfg["columns"]).eq(pk, record_id).single().execute()
+        row = resp.data
+        if row:
+            _resolve_user_names([row])
+        return {"status": "success", "data": row}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
 
@@ -121,6 +165,7 @@ def create_record(entity: str, data: dict, user_id: str = None) -> dict:
         return {"status": "error", "message": f"Invalid entity: {entity}", "status_code": 400}
     try:
         cfg = TABLE_CONFIG[entity]
+        pk = cfg["pk"]
         sb = get_supabase()
 
         now = _now()
@@ -130,7 +175,8 @@ def create_record(entity: str, data: dict, user_id: str = None) -> dict:
             data["created_by"] = user_id
             data["updated_by"] = user_id
 
-        # Remove id if present (let DB generate)
+        # Remove pk if present (let DB generate)
+        data.pop(pk, None)
         data.pop("id", None)
 
         resp = sb.table(cfg["table"]).insert(data).execute()
@@ -149,16 +195,18 @@ def update_record(entity: str, record_id: str, data: dict, user_id: str = None) 
         return {"status": "error", "message": f"Invalid entity: {entity}", "status_code": 400}
     try:
         cfg = TABLE_CONFIG[entity]
+        pk = cfg["pk"]
         sb = get_supabase()
 
         data["updated_at"] = _now()
         if user_id:
             data["updated_by"] = user_id
 
-        # Don't allow changing id
+        # Don't allow changing pk
+        data.pop(pk, None)
         data.pop("id", None)
 
-        resp = sb.table(cfg["table"]).update(data).eq("id", record_id).execute()
+        resp = sb.table(cfg["table"]).update(data).eq(pk, record_id).execute()
         if not resp.data:
             return {"status": "error", "message": "Record not found", "status_code": 404}
         return {"status": "success", "data": resp.data[0], "message": f"{entity[:-1].title()} updated"}
@@ -173,8 +221,9 @@ def delete_record(entity: str, record_id: str) -> dict:
         return {"status": "error", "message": f"Invalid entity: {entity}", "status_code": 400}
     try:
         cfg = TABLE_CONFIG[entity]
+        pk = cfg["pk"]
         sb = get_supabase()
-        resp = sb.table(cfg["table"]).delete().eq("id", record_id).execute()
+        resp = sb.table(cfg["table"]).delete().eq(pk, record_id).execute()
         if not resp.data:
             return {"status": "error", "message": "Record not found", "status_code": 404}
         return {"status": "success", "message": f"{entity[:-1].title()} deleted"}
@@ -201,17 +250,18 @@ def bulk_update(entity: str, updates: list, user_id: str = None) -> dict:
 
         success = 0
         failed = []
+        pk = cfg["pk"]
         for item in updates:
-            rid = item.get("id")
+            rid = item.get(pk) or item.get("id")
             if not rid:
-                failed.append({"error": "Missing id", "item": item})
+                failed.append({"error": f"Missing {pk}", "item": item})
                 continue
-            payload = {k: v for k, v in item.items() if k != "id"}
+            payload = {k: v for k, v in item.items() if k not in (pk, "id")}
             payload["updated_at"] = now
             if user_id:
                 payload["updated_by"] = user_id
             try:
-                sb.table(cfg["table"]).update(payload).eq("id", rid).execute()
+                sb.table(cfg["table"]).update(payload).eq(pk, rid).execute()
                 success += 1
             except Exception as e:
                 failed.append({"id": rid, "error": str(e)})
@@ -238,7 +288,9 @@ def bulk_create(entity: str, records: list, user_id: str = None) -> dict:
         sb = get_supabase()
         now = _now()
 
+        pk = cfg["pk"]
         for rec in records:
+            rec.pop(pk, None)
             rec.pop("id", None)
             rec["created_at"] = now
             rec["updated_at"] = now
@@ -266,8 +318,9 @@ def bulk_delete(entity: str, ids: list) -> dict:
 
     try:
         cfg = TABLE_CONFIG[entity]
+        pk = cfg["pk"]
         sb = get_supabase()
-        resp = sb.table(cfg["table"]).delete().in_("id", ids).execute()
+        resp = sb.table(cfg["table"]).delete().in_(pk, ids).execute()
         deleted = len(resp.data) if resp.data else 0
         return {
             "status": "success",
