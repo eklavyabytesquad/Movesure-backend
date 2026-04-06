@@ -33,6 +33,18 @@ from services.master_data_service import (
     list_records, get_record, create_record, update_record, delete_record,
     bulk_update, bulk_create, bulk_delete,
 )
+from services.challan.challan_book_service import (
+    list_challan_books, get_challan_book, create_challan_book, update_challan_book,
+)
+from services.challan.challan_service import (
+    list_challans, get_challan, create_challan, update_challan,
+    dispatch_challan, undispatch_challan, mark_hub_received, delete_challan,
+)
+from services.challan.transit_service import (
+    get_available_bilties, get_transit_bilties, add_to_transit,
+    remove_from_transit, bulk_remove_from_transit,
+    bulk_update_delivery_status, get_challan_stats,
+)
 
 
 @asynccontextmanager
@@ -115,7 +127,7 @@ SKIP_AUTH_PATHS = {"/api/health", "/api/refresh-token", "/docs", "/openapi.json"
 @app.middleware("http")
 async def ensure_valid_token(request: Request, call_next):
     path = request.url.path
-    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty"):
+    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty") or path.startswith("/api/challan"):
         return await call_next(request)
 
     print(f"🔍 Validating token for request: {request.method} {path}")
@@ -626,6 +638,223 @@ async def master_bulk_delete(request: Request, entity: str = Path(...)):
         if not ids:
             return JSONResponse(content={"status": "error", "message": "ids array is required"}, status_code=400)
         result = await _run(bulk_delete, entity, ids)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# CHALLAN & TRANSIT MANAGEMENT
+# ============================================================
+
+
+# ── Challan Books ─────────────────────────────────────────────
+
+@app.get("/api/challan/books")
+async def challan_books_list(
+    branch_id: str = Query(None),
+    active_only: bool = Query(False),
+    page: int = Query(1),
+    page_size: int = Query(40),
+):
+    try:
+        result = await _run(list_challan_books, branch_id, active_only, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/challan/books/{book_id}")
+async def challan_book_get(book_id: str = Path(...)):
+    try:
+        result = await _run(get_challan_book, book_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/books")
+async def challan_book_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_challan_book, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/challan/books/{book_id}")
+async def challan_book_update(request: Request, book_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_challan_book, book_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Challans ──────────────────────────────────────────────────
+
+@app.get("/api/challan/list")
+async def challans_list(
+    branch_id: str = Query(None),
+    is_dispatched: bool = Query(None),
+    page: int = Query(1),
+    page_size: int = Query(40),
+    search: str = Query(None),
+):
+    try:
+        result = await _run(list_challans, branch_id, is_dispatched, page, page_size, search)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/create")
+async def challan_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_challan, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Transit (bilty ↔ challan assignments) ─────────────────────
+
+@app.get("/api/challan/transit/available")
+async def transit_available(
+    page: int = Query(1),
+    page_size: int = Query(50),
+    search: str = Query(None),
+    payment_mode: str = Query(None),
+    city_id: str = Query(None),
+    source: str = Query(None),
+    branch_id: str = Query(None),
+):
+    try:
+        result = await _run(get_available_bilties, page, page_size, search, payment_mode, city_id, source, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/challan/transit/bilties/{challan_no}")
+async def transit_bilties(
+    challan_no: str = Path(...),
+    page: int = Query(1),
+    page_size: int = Query(50),
+    search: str = Query(None),
+):
+    try:
+        result = await _run(get_transit_bilties, challan_no, page, page_size, search)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/challan/transit/stats/{challan_no}")
+async def transit_stats(challan_no: str = Path(...)):
+    try:
+        result = await _run(get_challan_stats, challan_no)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/transit/add")
+async def transit_add(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(add_to_transit, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/transit/remove/{transit_id}")
+async def transit_remove(transit_id: str = Path(...)):
+    try:
+        result = await _run(remove_from_transit, transit_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/transit/bulk-remove")
+async def transit_bulk_remove(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(bulk_remove_from_transit, data.get("transit_ids", []), data.get("challan_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/challan/transit/delivery-status")
+async def transit_delivery_status(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(bulk_update_delivery_status, data.get("updates", []), data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Challan by ID (catch-all — must be AFTER all /api/challan/... routes) ──
+
+@app.get("/api/challan/{challan_id}")
+async def challan_get(challan_id: str = Path(...)):
+    try:
+        result = await _run(get_challan, challan_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/challan/{challan_id}")
+async def challan_update(request: Request, challan_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_challan, challan_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/{challan_id}/dispatch")
+async def challan_dispatch(request: Request, challan_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(dispatch_challan, challan_id, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/{challan_id}/undispatch")
+async def challan_undispatch(challan_id: str = Path(...)):
+    try:
+        result = await _run(undispatch_challan, challan_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/{challan_id}/hub-received")
+async def challan_hub_received(request: Request, challan_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(mark_hub_received, challan_id, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/challan/{challan_id}")
+async def challan_delete(challan_id: str = Path(...)):
+    try:
+        result = await _run(delete_challan, challan_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
