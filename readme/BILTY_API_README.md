@@ -249,7 +249,8 @@ For **editing** an existing bilty, add:
       "city_name": "KANPUR",
       "city_code": "KNP"
     },
-    "new_current_number": 8045
+    "new_current_number": 8045,
+    "next_gr_no": "A08045"
   }
 }
 ```
@@ -331,6 +332,13 @@ async function handleSave() {
         ...prev,
         current_number: serverCurrentNumber
       }));
+    }
+
+    // ✅ Use next_gr_no from save response — eliminates need for /next-available call
+    // This makes rapid bilty creation reliable even under connection pressure.
+    const nextGrNo = result.data.next_gr_no;
+    if (nextGrNo && !editMode) {
+      setFormData(prev => ({ ...prev, gr_no: nextGrNo }));
     }
 
     // Pass to PDF generation — guaranteed correct
@@ -642,8 +650,9 @@ All endpoints return errors in the same format:
 | Page load data | 8 Supabase calls sequential ~2-3s | 1 API call, 7 parallel queries ~200-400ms |
 | Save bilty | Direct Supabase + re-fetch cities | 1 API call, parallel validation ~100-200ms |
 | PDF city data | Re-fetches from Supabase (fails on slow network) | Returned in save response (guaranteed) |
-| Rate save | Blocking (adds ~100ms to save) | Background (non-blocking) |
-| Bill book update | Blocking (adds ~100ms to save) | Background (non-blocking) |
+| Next GR after save | Separate `/next-available` call (can fail under load) | `next_gr_no` returned in save response (guaranteed) |
+| Rate save | Blocking (adds ~100ms to save) | Background (non-blocking, retries on connection error) |
+| Bill book update | Frontend-calculated (stale, can drift) | Server safety-checked: always `highest_used + 1` |
 | Consignor rates | Frontend fetches one by one | 1 API call with city lookup map |
 | Default rates | Loaded in reference-data | Dedicated endpoint with city-id map |
 | Both rates | 2 sequential calls | 1 call, 2 parallel queries |

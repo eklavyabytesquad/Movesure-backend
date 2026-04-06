@@ -6,6 +6,7 @@ never has to rely on network during PDF generation.
 Optimized with parallel DB calls for maximum speed.
 """
 from concurrent.futures import ThreadPoolExecutor
+from time import sleep
 from services.supabase_client import get_supabase
 
 # Shared thread pool for background tasks (rate save, bill book update)
@@ -23,6 +24,11 @@ def _extract_gr_number(gr_no: str, prefix: str, postfix: str, digits: int) -> in
         return int(num_part)
     except (ValueError, IndexError):
         return None
+
+
+def _format_gr(prefix: str, number: int, digits: int, postfix: str = None) -> str:
+    """Format a GR number string, e.g. prefix='A', number=8044, digits=5 -> 'A08044'."""
+    return f"{prefix or ''}{str(number).zfill(digits)}{postfix or ''}"
 
 
 def _get_highest_used_gr(sb, prefix: str, digits: int, postfix: str, from_num: int, to_num: int) -> int | None:
@@ -278,24 +284,6 @@ def save_bilty(data: dict) -> dict:
         # Remove None values to let DB defaults apply
         bilty_row = {k: v for k, v in bilty_row.items() if v is not None}
 
-        # === DUPLICATE GR CHECK (for new bilties) ===
-        if not bilty_id:
-            dup_check = (
-                sb.table("bilty")
-                .select("id")
-                .eq("gr_no", gr_no)
-                .eq("branch_id", branch_id)
-                .eq("is_active", True)
-                .limit(1)
-                .execute()
-            )
-            if dup_check.data:
-                return {
-                    "status": "error",
-                    "message": f"GR number {gr_no} already exists for this branch",
-                    "status_code": 409,
-                }
-
         # === SAVE ===
         if bilty_id:
             # UPDATE existing bilty
@@ -365,26 +353,42 @@ def save_bilty(data: dict) -> dict:
             except Exception as bb_err:
                 print(f"Bill book safety check error: {bb_err}")
 
+        # === COMPUTE NEXT GR (returned so frontend doesn't need a separate call) ===
+        next_gr_no = None
+        if new_current_number is not None and bb:
+            next_gr_no = _format_gr(
+                bb["prefix"], new_current_number, bb["digits"], bb.get("postfix")
+            )
+
         # === POST-SAVE: Run in BACKGROUND (non-blocking, response returns immediately) ===
         def _post_save():
-            try:
-                _sb = get_supabase()
-                # Auto-create consignor/consignee if new
-                _ensure_party(_sb, "consignors", consignor_name, data.get("consignor_gst"), data.get("consignor_number"))
-                _ensure_party(_sb, "consignees", consignee_name, data.get("consignee_gst"), data.get("consignee_number"))
-                # Auto-save rate
-                if saving_option == "SAVE" and data.get("rate"):
-                    _auto_save_rate(_sb, branch_id, to_city_id, consignor_name, data.get("rate"))
-            except Exception as bg_err:
-                print(f"Background post-save error: {bg_err}")
+            for attempt in range(2):
+                try:
+                    _sb = get_supabase()
+                    # Auto-create consignor/consignee if new
+                    _ensure_party(_sb, "consignors", consignor_name, data.get("consignor_gst"), data.get("consignor_number"))
+                    _ensure_party(_sb, "consignees", consignee_name, data.get("consignee_gst"), data.get("consignee_number"))
+                    # Auto-save rate
+                    if saving_option == "SAVE" and data.get("rate"):
+                        _auto_save_rate(_sb, branch_id, to_city_id, consignor_name, data.get("rate"))
+                    return  # success — exit retry loop
+                except OSError as e:
+                    if attempt == 0:
+                        print(f"Background post-save: connection error, retrying in 1s... ({e})")
+                        sleep(1)
+                    else:
+                        print(f"Background post-save error (after retry): {e}")
+                except Exception as bg_err:
+                    print(f"Background post-save error: {bg_err}")
+                    return  # non-retriable — exit
 
         _bg_pool.submit(_post_save)
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # This is the key: frontend gets city names back from server
         # and uses THESE for PDF — no fallback defaults needed.
-        # Also returns new_current_number so frontend can sync local state
-        # from the server instead of calculating it.
+        # Also returns new_current_number + next_gr_no so frontend can
+        # immediately show the next GR without calling /next-available.
         return {
             "status": "success",
             "message": "Bilty saved successfully",
@@ -393,6 +397,7 @@ def save_bilty(data: dict) -> dict:
                 "from_city": from_city,
                 "to_city": to_city,
                 "new_current_number": new_current_number,
+                "next_gr_no": next_gr_no,
             },
         }
 
