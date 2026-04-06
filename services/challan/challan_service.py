@@ -344,20 +344,29 @@ def delete_challan(challan_id: str) -> dict:
 
 def get_challan_init(branch_id: str) -> dict:
     """
-    Single endpoint for challan page init.
-    Uses RPC get_challan_init for 1 DB round-trip instead of 6+ queries.
-    Returns: branches, cities, permanent_details, challan_books (branch-only),
-             challans (both dispatched & non-dispatched, names resolved via JOINs).
+    Single RPC replaces 3 API calls (init + list + available).
+    Returns: branches, cities, permanent_details, challan_books,
+             ALL challans (lightweight, name-resolved),
+             available bilties (regular + station, branch-filtered).
+    Frontend only needs 1 more call: transit bilties for selected challan.
     """
     try:
         sb = get_supabase()
 
-        # Single RPC call — all data + JOINs for name resolution
-        rpc_resp = sb.rpc("get_challan_init", {"p_branch_id": branch_id}).execute()
+        rpc_resp = sb.rpc("get_challan_page_init", {"p_branch_id": branch_id}).execute()
         rpc_data = rpc_resp.data or {}
 
         branches = rpc_data.get("branches") or []
         user_branch = next((b for b in branches if b["id"] == branch_id), None)
+
+        regular = rpc_data.get("available_regular") or []
+        station = rpc_data.get("available_station") or []
+        for r in regular:
+            r["source_table"] = "bilty"
+            r["bilty_type"] = "reg"
+        for s in station:
+            s["source_table"] = "station_bilty_summary"
+            s["bilty_type"] = "mnl"
 
         return {
             "status": "success",
@@ -368,6 +377,9 @@ def get_challan_init(branch_id: str) -> dict:
                 "permanent_details": rpc_data.get("permanent_details") or [],
                 "challan_books": rpc_data.get("challan_books") or [],
                 "challans": rpc_data.get("challans") or [],
+                "available_bilties": regular + station,
+                "regular_count": len(regular),
+                "station_count": len(station),
             },
         }
     except Exception as e:

@@ -1,294 +1,165 @@
-# Challan & Transit Management System
+# Challan Page — Initial Load Breakdown
 
-## Overview
-
-The Challan system manages the **dispatch of bilties (consignment notes) via trucks**. It connects bilties to challans (loading manifests), tracks them through transit stages, and handles the full lifecycle from loading to delivery.
+What exactly happens when the challan page loads for the first time.
 
 ---
 
-## Database Tables
+## 4 Sequential API Requests
 
-### 1. `challan_books` — Number Series for Challans
-
-Controls how challan numbers are generated for each route.
-
-| Field | Purpose |
-|-------|---------|
-| `prefix` | Challan number prefix (e.g., `"CH"`) |
-| `from_number` / `to_number` | Number range (e.g., 1–500) |
-| `digits` | Zero-padding (e.g., 4 → `CH0001`) |
-| `postfix` | Suffix after number |
-| `current_number` | Next number to use (auto-incremented) |
-| `from_branch_id` / `to_branch_id` | Route: origin → destination branch |
-| `branch_1`, `branch_2`, `branch_3` | Which branches can use this book |
-| `is_active` / `is_completed` | Book status |
-
-**Challan Number Formula:** `prefix + padStart(current_number, digits, '0') + postfix`
-
-### 2. `challan_details` — The Challan (Loading Manifest)
-
-Each challan represents **one truck load** going from origin branch to a destination.
-
-| Field | Purpose |
-|-------|---------|
-| `challan_no` | Unique challan number (from challan book) |
-| `branch_id` | Origin branch |
-| `truck_id` | Assigned truck (FK → `trucks`) |
-| `owner_id` | Truck owner (FK → `staff`) |
-| `driver_id` | Assigned driver (FK → `staff`) |
-| `date` | Challan date |
-| `total_bilty_count` | Number of bilties loaded |
-| `is_dispatched` | Whether truck has left |
-| `dispatch_date` | When dispatch happened |
-| `is_received_at_hub` | Hub receipt status |
-| `received_at_hub_timing` | Hub receipt timestamp |
-| `is_active` | Soft delete flag |
-
-### 3. `transit_details` — Bilty-to-Challan Link + Delivery Tracking
-
-Each row = **one bilty assigned to one challan**, with its delivery pipeline status.
-
-| Field | Purpose |
-|-------|---------|
-| `challan_no` | Which challan this bilty is on |
-| `gr_no` | Bilty GR number |
-| `bilty_id` | FK to `bilty` table (null for station bilties) |
-| `challan_book_id` | Which book was used |
-| `from_branch_id` / `to_branch_id` | Route |
-
-**Delivery Pipeline (5 stages):**
-
-| Stage | Fields | Meaning |
-|-------|--------|---------|
-| 1 | `is_out_of_delivery_from_branch1` + date | Left origin branch |
-| 2 | `is_delivered_at_branch2` + date | Arrived at destination branch |
-| 3 | `is_out_of_delivery_from_branch2` + date | Out for local delivery |
-| 4 | `is_delivered_at_destination` + date | Delivered to consignee |
-| 5 | `out_for_door_delivery` + date + agent info | Door delivery details |
-
----
-
-## Complete Flow
+All requests are **sequential** (not parallel) to avoid Render thread pool exhaustion.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    CHALLAN LIFECYCLE                       │
-├──────────────────────────────────────────────────────────┤
-│                                                           │
-│  1. CREATE CHALLAN BOOK (challan-settings page)           │
-│     └─ Define number series + route (branch A → B)       │
-│                                                           │
-│  2. CREATE CHALLAN (challan-settings page)                │
-│     ├─ Pick challan book → auto-generate challan_no      │
-│     ├─ Assign truck → auto-fills owner                   │
-│     ├─ Assign driver                                      │
-│     ├─ INSERT into challan_details (is_dispatched=false)  │
-│     └─ INCREMENT challan_books.current_number             │
-│                                                           │
-│  3. LOAD BILTIES (challan page)                           │
-│     ├─ Select active challan from dropdown                │
-│     ├─ Select challan book (sets destination branch)      │
-│     ├─ View available bilties (not yet in any transit)    │
-│     ├─ Select bilties → click "Add to Transit"            │
-│     └─ INSERT rows into transit_details                   │
-│                                                           │
-│  4. DISPATCH (challan-settings page)                      │
-│     ├─ Mark is_dispatched = true                          │
-│     ├─ Set dispatch_date                                  │
-│     └─ Challan becomes READ-ONLY                          │
-│                                                           │
-│  5. HUB RECEIPT (hub-management page)                     │
-│     └─ Mark is_received_at_hub = true                     │
-│                                                           │
-│  6. DELIVERY TRACKING (hub-management page)               │
-│     ├─ Update transit_details delivery stages              │
-│     └─ Uses bulk_update_transit_status RPC                │
-│                                                           │
-└──────────────────────────────────────────────────────────┘
+Step 1 → GET /api/challan/init?branch_id=X           (reference data)
+Step 2 → GET /api/challan/list?branch_id=X&page_size=10000  (ALL challans)
+Step 3 → GET /api/challan/transit/available?branch_id=X      (available bilties)
+Step 4 → GET /api/challan/transit/bilties/{challan_no}       (transit bilties for auto-selected challan)
 ```
 
 ---
 
-## How Available Bilties Are Loaded
+## Step 1: `GET /api/challan/init?branch_id={user.branch_id}`
 
-Available bilties = bilties that exist but are **NOT assigned to any challan yet**.
+**Single Supabase RPC call** (`get_challan_init`) — returns 5 datasets in 1 DB round-trip.
 
+| Data | Filter | Stored In | Used By |
+|------|--------|-----------|---------|
+| `user_branch` | `id = branch_id` | `userBranch` | TransitHeader, PDF header |
+| `branches` | All (no filter) | `branches` | ChallanSelector (branch names), BiltyList (branch filter) |
+| `cities` | All (no filter) | `cities` | BiltyList (city filter) |
+| `permanent_details` | All (company details) | `permanentDetails` | ChallanPDFPreview (company name, logo, address) |
+| `challan_books` | `is_active=true`, `is_completed=false`, `branch_1/2/3 = branch_id` | `challanBooks` | ChallanSelector book dropdown — **only books assigned to user's branch** |
+
+> **Note:** Init also returns `challans` (last 50) but we **ignore** those and fetch all challans in Step 2 instead.
+
+---
+
+## Step 2: `GET /api/challan/list?branch_id={user.branch_id}&page_size=10000`
+
+Fetches **ALL challans** for this branch (active + dispatched). No 50-row limit.
+
+| Data | Filter | Stored In | Used By |
+|------|--------|-----------|---------|
+| `rows` | `branch_id`, `is_active=true`, all pages | `challans` | ChallanSelector dropdown (Active + Dispatched sections) |
+
+Each challan row includes resolved names via SQL JOINs:
+- `truck_number` (from `trucks` table)
+- `driver_name` (from `staff` table)
+- `owner_name` (from `staff` table)
+- `created_by` (user name from `users` table)
+- `total_bilty_count` (maintained by server on add/remove)
+
+**Transform:** Each row is passed through `transformChallanRow()` to create nested objects:
 ```
-1. Call DB function: get_available_gr_count() → total count
-2. Call DB function: get_available_gr_numbers(limit, offset) → list of GR numbers + source table
-3. Each GR number has a source_table: 'bilty' or 'station_bilty_summary'
-4. Fetch full details from respective tables using the GR numbers
-5. Process and merge both lists with city/branch name resolution
-6. Sort by GR number
+truck_number → truck.truck_number
+driver_name  → driver.name
+owner_name   → owner.name
 ```
+This is needed because ChallanSelector/ChallanPDFPreview expect nested objects.
 
-**Two sources of bilties:**
-- **`bilty` table** — Regular bilties created from the bilty page (full details: consignor, consignee, charges, etc.)
-- **`station_bilty_summary` table** — Station/manual bilties received from other branches (lighter data)
-
-**Filtering out already-in-transit bilties** is done at the database level by the `get_available_gr_numbers` function.
+**After this step:** Auto-selects the most recent active (non-dispatched) challan. If none, falls back to the most recent dispatched challan.
 
 ---
 
-## Adding Bilties to Transit
+## Step 3: `GET /api/challan/transit/available?branch_id={user.branch_id}&page=1&page_size=1000`
 
-When user clicks **"Add to Transit"**:
+Fetches bilties **not assigned to any challan** for this branch.
 
-```
-1. VALIDATE
-   ├─ Challan must be selected (and NOT dispatched)
-   ├─ Challan book must be selected
-   └─ At least one bilty must be selected
+| Data | Filter | Stored In | Used By |
+|------|--------|-----------|---------|
+| Regular bilties | `source_table = 'bilty'` | `bilties` | BiltyList "Available" tab (Reg section) |
+| Station bilties | `source_table = 'station_bilty_summary'` | `stationBilties` | BiltyList "Available" tab (Mnl section) |
+| `total` count | — | `totalAvailableCount` | TransitHeader stats |
 
-2. DEDUPLICATE
-   ├─ Group by gr_no
-   └─ If same GR exists in both 'bilty' and 'station_bilty_summary',
-      prefer the 'bilty' source (has more detail)
+Each row includes:
+- `bilty_type`: `"reg"` (bilty table) or `"mnl"` (station_bilty_summary)
+- `source_table`: `"bilty"` or `"station_bilty_summary"`
+- Full bilty details: `gr_no`, `consignor_name`, `consignee_name`, `weight`, `packages`, etc.
 
-3. CHECK EXISTING
-   ├─ Query transit_details for all selected GR numbers
-   └─ Skip any that already exist (prevent duplicates)
-
-4. INSERT
-   ├─ Create transit_details row for each new bilty:
-   │   ├─ challan_no = selected challan
-   │   ├─ gr_no = bilty GR number
-   │   ├─ bilty_id = bilty.id (only for 'bilty' source, null for station)
-   │   ├─ from_branch_id = user's branch
-   │   ├─ to_branch_id = challan book's destination
-   │   └─ All delivery flags = false
-   └─ UPDATE challan_details.total_bilty_count += inserted count
-
-5. REFRESH
-   ├─ Reload available bilties (removed ones disappear)
-   ├─ Reload transit bilties (added ones appear)
-   └─ Reload challans (updated count)
-```
+**Server-side:** Uses RPC `get_available_gr_numbers` with `NOT EXISTS` against `transit_details`. Deduplicates — if same GR exists in both tables, prefers `bilty`.
 
 ---
 
-## Removing Bilties from Transit
+## Step 4: `GET /api/challan/transit/bilties/{challan_no}`
 
-### Single Remove
-- Click the remove button on a transit bilty card
-- Confirms with user → `DELETE FROM transit_details WHERE id = transit_id`
-- Updates `challan_details.total_bilty_count -= 1`
+Fetches bilties loaded into the **auto-selected challan**.
 
-### Bulk Remove
-- Select multiple transit bilties via checkboxes
-- Click "Remove Selected" → confirms with user
-- `DELETE FROM transit_details WHERE id IN (selected_transit_ids)`
-- Updates `challan_details.total_bilty_count -= removed_count`
+| Data | Filter | Stored In | Used By |
+|------|--------|-----------|---------|
+| Transit bilties | `challan_no` match | `transitBilties` | BiltyList "Transit" tab, ChallanSelector bilty counts |
 
-**Note:** Removing from transit does NOT delete the bilty itself — it only removes the challan assignment. The bilty goes back to the "available" pool.
-
----
-
-## Dispatch
-
-Dispatch happens on the **challan-settings page** (not the challan loading page):
-
-1. Toggle `is_dispatched = true` on `challan_details`
-2. Set `dispatch_date = now()`
-3. Once dispatched, the challan becomes **READ-ONLY**:
-   - Cannot add bilties
-   - Cannot remove bilties
-   - Selection checkboxes are disabled
-   - "Add to Transit" button is disabled
-
-The challan page auto-selects the most recent **active** (non-dispatched) challan. If none exist, it falls back to the most recent dispatched challan (read-only view).
+Each row includes:
+- `bilty_type`: `"reg"` or `"mnl"` — used for count breakdown in ChallanSelector
+- `transit_id`: needed for remove operations
+- `source_table`: `"bilty"` or `"station_bilty_summary"`
+- Enriched bilty details from the appropriate source table
 
 ---
 
-## Challan Selector (Left Panel)
+## After Load — Auto-Selection
 
-Shows two dropdowns:
-
-### Challan Dropdown
-- **Active challans** — can add/remove bilties
-- **Dispatched challans** — read-only view
-- Searchable by: challan number, truck number, driver name, owner name
-- Shows: date, bilty count, dispatch badge
-
-### Challan Book Dropdown
-- Only shows active, non-completed books for the user's branch
-- Determines the **destination branch** when adding bilties
-- Shows route info (destination branch name)
-
-### Challan Overview (when selected)
-- Bilty counts: Regular / Manual / Total
-- Truck, Driver, Owner details
-- Active vs Dispatched status badge
-
----
-
-## Bilty Lists (Right Panel)
-
-### Available Bilties Tab
-- Shows all bilties not yet in any challan
-- Filters: search text, payment mode, date, city, bilty type
-- Excludes: cancelled bilties (`consignor_name === 'CANCEL BILTY'`)
-- Click to select, double-click to add directly to challan
-- Sorted by GR number (alphanumeric: prefix → number → suffix)
-
-### Transit Bilties Tab
-- Shows bilties assigned to the **currently selected challan**
-- Same filter options as available list
-- Sorted by **destination city alphabetically**, then by GR number
-- Dispatched challan → selection disabled
-
----
-
-## PDF Generation
-
-Two PDF types available:
-
-### Loading Challan PDF
-- Shows all **available bilties** (loading manifest for what's ready to load)
-- Portrait A4, 2-column × 20-row layout (40 bilties per page)
-- Grouped by destination city → sorted by GR number
-- Header: company name, challan number, date, truck/driver/owner
-- Totals: bilty count (REG/MNL), packages, weight
-
-### Challan Bilties PDF
-- Shows bilties **in the selected challan** (what's already loaded)
-- Detailed bilty listing for the specific challan
-
----
-
-## Transit Header (Stats Dashboard)
-
-Six stat cards displayed at the top:
-
-| Card | Value |
+| What | Logic |
 |------|-------|
-| Available | Count of filtered available bilties |
-| In Transit | Count of bilties in selected challan |
-| Weight | Total weight of transit bilties (KG + ton/quintal) |
-| E-way Bills | Count of individual EWBs across transit bilties |
-| Selected | Count of currently checked available bilties |
-| Packages | Total packages in transit bilties |
-
-Also shows payment mode breakdown (to-pay vs paid amounts).
+| **Challan** | First active (non-dispatched) challan. If none → first dispatched challan. |
+| **Challan Book** | First available book (already branch-filtered by init). |
 
 ---
 
-## Key Technical Details
+## What's Branch-Filtered vs Global
 
-### Data Flow
-- All database operations go **directly to Supabase** from the client (no backend API for challan operations)
-- Available bilties use **database functions** (`get_available_gr_count`, `get_available_gr_numbers`) for efficient filtering
-- Delivery tracking updates use `bulk_update_transit_status` RPC
+| Branch-Filtered (`user.branch_id`) | Global (all rows) |
+|-------------------------------------|-------------------|
+| `challan_books` — `branch_1/2/3 = branch_id` | `branches` — all branches |
+| `challans` — `branch_id` match | `cities` — all cities |
+| `available bilties` — `branch_id` match | `permanent_details` — company info |
+| `user_branch` — user's own branch | |
+| `transit bilties` — by `challan_no` (challan is already branch-scoped) | |
 
-### Deduplication Logic
-- When adding bilties, if the same GR number exists in both `bilty` and `station_bilty_summary`, the `bilty` source is preferred (more complete data)
-- Before inserting into `transit_details`, existing GR numbers are checked and skipped
+---
 
-### Sorting
-- Available bilties: sorted by GR number (alphanumeric)
-- Transit bilties: sorted by **destination city** (alphabetical), then GR number within same city
+## Summary
 
-### Auto-Selection on Page Load
-1. Auto-selects the most recent **active** challan (non-dispatched)
-2. If no active challans, falls back to most recent **dispatched** challan
-3. Auto-selects the first available challan book
+```
+┌────────────────────────────────────────────────────────────────┐
+│  CHALLAN PAGE INITIAL LOAD                                     │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  Request 1: GET /api/challan/init                              │
+│  ├─ user_branch        (branch-filtered)                       │
+│  ├─ branches           (global)                                │
+│  ├─ cities             (global)                                │
+│  ├─ permanent_details  (global)                                │
+│  └─ challan_books      (branch-filtered: branch_1/2/3)        │
+│                                                                │
+│  Request 2: GET /api/challan/list?page_size=10000              │
+│  └─ ALL challans       (branch-filtered, active+dispatched)    │
+│                                                                │
+│  Request 3: GET /api/challan/transit/available                  │
+│  └─ available bilties  (branch-filtered, not in any challan)   │
+│                                                                │
+│  Request 4: GET /api/challan/transit/bilties/{challan_no}      │
+│  └─ transit bilties    (for auto-selected challan)             │
+│                                                                │
+│  Auto-select: first active challan + first challan book        │
+└────────────────────────────────────────────────────────────────┘
+```
+Key differences:
+
+Old (Supabase direct)	New (Render API)
+Where it runs	Supabase PostgREST — unlimited capacity	Render free tier — limited thread pool
+Limit	None — returns ALL challans	page_size=10000 through Render
+JOINs	PostgREST embedded JOINs (native, fast)	Server-side SQL JOINs (extra layer)
+Server load	Zero on Render	Heavy — Render processes 10K rows
+The old approach had no Render load because Supabase handles the query directly. The new approach routes everything through Render with page_size=10000, which is heavy.
+
+// OLD — goes straight to Supabase PostgREST (NOT through Render)
+supabase
+  .from('challan_details')
+  .select(`id, challan_no, ..., 
+    truck:trucks(...), 
+    owner:staff!challan_details_owner_id_fkey(...), 
+    driver:staff!challan_details_driver_id_fkey(...)
+  `)
+  .eq('branch_id', user.branch_id)
+  .eq('is_active', true)
+  .order('is_dispatched', { ascending: true })
+  .order('created_at', { ascending: false })

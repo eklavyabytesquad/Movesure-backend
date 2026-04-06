@@ -19,7 +19,11 @@ Manages the **full challan lifecycle**: challan book number series → challan c
 | Available bilties performance (Render 500) | Uses Supabase RPC `get_available_gr_numbers` — single DB query instead of fetching all rows client-side |
 | GR with mismatched bilty_id (recreated bilties) | SQL function matches on `gr_no` only, not `bilty_id`, so recreated bilties are correctly excluded |
 | All bilties showing as "reg" type | Added `bilty_type` field: `"reg"` (from bilty table) / `"mnl"` (from station_bilty_summary) |
-| 10 separate requests on page load | New `/api/challan/init` endpoint combines 6 lookups into 1 call |
+| 4 sequential requests on page load | Single RPC `get_challan_page_init` replaces init + list + available (4→2 requests) |
+| Dispatched challans not visible on init | Returns ALL active challans (dispatched + non-dispatched), sorted non-dispatched first |
+| Slow init (9+ DB round-trips) | Single Supabase RPC — 1 DB call, JOINs for name resolution, includes available bilties |
+| Challan books from all branches showing | Filtered to `branch_1/2/3 = branch_id` — only books assigned to user's branch |
+| Only 50 challans returned | Now returns ALL challans (lightweight: no bilty details per challan) |
 
 ---
 
@@ -36,8 +40,8 @@ Manages the **full challan lifecycle**: challan book number series → challan c
 ### Challans
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/challan/init` | **Combined page-load fetch** (branches, cities, books, challans, permanent_details) |
-| GET | `/api/challan/list` | List challans (paginated) |
+| GET | `/api/challan/init` | **Combined page-load fetch** (all reference data + ALL challans + available bilties) |
+| GET | `/api/challan/list` | List challans (paginated, for search/filter) |
 | GET | `/api/challan/{id}` | Get single challan |
 | POST | `/api/challan/create` | Create challan (auto-generates number) |
 | PUT | `/api/challan/{id}` | Update challan (blocked if dispatched) |
@@ -61,36 +65,62 @@ Manages the **full challan lifecycle**: challan book number series → challan c
 
 ## API Details
 
-### 0. Combined Page-Load Init
+### 0. Combined Page-Load Init (Single RPC)
 
-Replaces 6+ separate frontend requests with a single call. Returns everything the challan page needs on load.
+One RPC call (`get_challan_page_init`) replaces 3 API requests — returns reference data + ALL challans + available bilties.
 
 ```js
 const res = await fetch(`${API}/api/challan/init?branch_id=${user.branch_id}`);
 const { data } = await res.json();
-// data.user_branch    = { id, name, ... }           ← user's branch
-// data.branches       = [{ id, name, ... }, ...]    ← all branches
-// data.cities         = [{ id, name, ... }, ...]    ← all cities
-// data.permanent_details = [{ ... }]                ← company details (PDF header)
-// data.challan_books  = [{ id, prefix, ... }, ...]  ← active books for this branch
-// data.challans       = [{ id, challan_no, ... }]   ← active (non-dispatched) challans
+// data.user_branch        = { id, name, ... }           ← user's branch
+// data.branches           = [{ id, name, ... }, ...]    ← all branches
+// data.cities             = [{ id, name, ... }, ...]    ← all cities
+// data.permanent_details  = [{ ... }]                   ← company details (PDF header)
+// data.challan_books      = [{ id, prefix, ... }, ...]  ← active books for THIS branch only
+// data.challans           = [{                          ← ALL active challans (non-dispatched first)
+//     id, challan_no, truck_number, driver_name, owner_name,
+//     is_dispatched, dispatch_date, total_bilty_count, ...
+//   }]
+// data.available_bilties  = [{ gr_no, source_table, bilty_type, ... }]  ← bilties not in any challan
+// data.regular_count      = 120   ← count of "reg" bilties
+// data.station_count      = 45    ← count of "mnl" bilties
+```
+
+**Key points:**
+- **Challans** — ALL active challans (no limit), lightweight fields only (challan_no, dispatch details, bilty count, truck/driver/owner names). Sorted: non-dispatched first, then dispatched, both by `created_at DESC`.
+- **Challan books** — filtered to `branch_1/2/3 = branch_id`. User only sees their branch's books.
+- **Available bilties** — bilties not in any challan, filtered by `branch_id`. Each row has `bilty_type` (`"reg"` or `"mnl"`) and `source_table`.
+- **Names resolved via SQL JOINs** — `truck_number`, `driver_name`, `owner_name`, `created_by` (user name) — no extra API calls.
+
+#### Frontend Transform
+
+Pass each challan through `transformChallanRow()` to create nested objects:
+```js
+// challan from init has flat fields:
+//   truck_number, driver_name, owner_name
+// Transform to nested objects for ChallanSelector/ChallanPDFPreview:
+//   truck: { truck_number }, driver: { name }, owner: { name }
+```
+
+Auto-select: first active (non-dispatched) challan. If none → first dispatched. First challan book (already branch-filtered).
+
+#### Separate Available Bilties
+
+From the `available_bilties` array, split into reg and station:
+```js
+const bilties = data.available_bilties.filter(b => b.bilty_type === 'reg');
+const stationBilties = data.available_bilties.filter(b => b.bilty_type === 'mnl');
 ```
 
 **Before vs After:**
-| Before (10 requests) | After (4 requests) |
+| Before (4 sequential requests) | After (2 requests) |
 |---|---|
-| GET branches (user's) | **GET /api/challan/init** (1 call = 6 lookups) |
-| GET cities | |
-| ~~GET trucks~~ (dead prop) | |
-| ~~GET staff~~ (dead prop) | |
-| GET branches (all) | |
-| GET permanent_details | |
-| GET /api/challan/list | |
-| GET /api/challan/books | |
-| GET /api/challan/transit/available | GET /api/challan/transit/available |
+| GET /api/challan/init | **GET /api/challan/init** (1 RPC = everything) |
+| GET /api/challan/list?page_size=10000 | *(included in init)* |
+| GET /api/challan/transit/available | *(included in init)* |
 | GET /api/challan/transit/bilties/{no} | GET /api/challan/transit/bilties/{no} |
 
-**Result:** 10 requests → 3 requests on page load (init + available + transit bilties). The `trucks` and `staff` fetches are removed (dead props).
+**Result:** 4 sequential requests → 2 requests on page load (init + transit bilties for selected challan).
 
 ---
 
@@ -463,9 +493,9 @@ await fetch(`${API}/api/challan/transit/delivery-status`, {
 ## Complete Flow (Frontend → API)
 
 ```
-1. PAGE LOAD
-   └─ GET /api/challan/init?branch_id=X                       → branches, cities, permanent_details, books, challans (1 call)
-   └─ GET /api/challan/transit/available                       → available bilties list (all branches)
+1. PAGE LOAD (2 requests only)
+   └─ GET /api/challan/init?branch_id=X                       → ALL data (1 RPC): branches, cities, books, ALL challans, available bilties
+   └─ GET /api/challan/transit/bilties/{challan_no}            → transit bilties for auto-selected challan
 
 2. SELECT A CHALLAN
    ├─ GET /api/challan/transit/bilties/{challan_no}            → transit bilties tab
@@ -543,3 +573,135 @@ $$;
 - Matches on `gr_no` only (not `bilty_id`) to handle cases where a bilty was deleted and recreated with a different UUID
 - Station bilties are excluded if the same GR exists in the `bilty` table (deduplication)
 - Returns `VARCHAR` types to match table column types (avoids TEXT vs VARCHAR mismatch)
+
+### RPC: `get_challan_page_init`
+
+The init endpoint uses this single RPC to fetch everything the page needs — reference data, ALL challans, and available bilties — in one DB call:
+
+```sql
+CREATE OR REPLACE FUNCTION get_challan_page_init(p_branch_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  result JSON;
+BEGIN
+  SELECT json_build_object(
+    -- Challan books: active + incomplete, for this branch only
+    'challan_books', COALESCE((
+      SELECT json_agg(row_to_json(cb_sub))
+      FROM (
+        SELECT id, prefix, from_number, to_number, digits, postfix,
+               current_number, from_branch_id, to_branch_id,
+               branch_1, branch_2, branch_3,
+               is_active, is_completed, is_fixed, auto_continue,
+               created_by, created_at, updated_at
+        FROM challan_books
+        WHERE is_active = true
+          AND is_completed = false
+          AND (branch_1 = p_branch_id OR branch_2 = p_branch_id OR branch_3 = p_branch_id)
+        ORDER BY created_at DESC
+      ) cb_sub
+    ), '[]'::json),
+
+    -- ALL challans: lightweight, names resolved via JOINs, non-dispatched first
+    'challans', COALESCE((
+      SELECT json_agg(row_to_json(ch_sub))
+      FROM (
+        SELECT cd.id, cd.challan_no, cd.branch_id, cd.truck_id, cd.owner_id,
+               cd.driver_id, cd.date, cd.total_bilty_count, cd.remarks,
+               cd.is_active, cd.is_dispatched, cd.dispatch_date,
+               cd.is_received_at_hub, cd.received_at_hub_timing, cd.received_by_user,
+               COALESCE(u.name, cd.created_by::text) AS created_by,
+               cd.created_at, cd.updated_at,
+               t.truck_number,
+               s_driver.name AS driver_name,
+               s_owner.name AS owner_name
+        FROM challan_details cd
+        LEFT JOIN trucks t ON t.id = cd.truck_id
+        LEFT JOIN staff s_driver ON s_driver.id = cd.driver_id
+        LEFT JOIN staff s_owner ON s_owner.id = cd.owner_id
+        LEFT JOIN users u ON u.id = cd.created_by
+        WHERE cd.branch_id = p_branch_id
+          AND cd.is_active = true
+        ORDER BY cd.is_dispatched ASC, cd.created_at DESC
+      ) ch_sub
+    ), '[]'::json),
+
+    -- Available regular bilties (NOT in any transit, active, not CANCEL)
+    'available_regular', COALESCE((
+      SELECT json_agg(row_to_json(ar_sub))
+      FROM (
+        SELECT b.id, b.gr_no, b.branch_id, b.bilty_date, b.delivery_type,
+               b.consignor_name, b.consignor_gst, b.consignor_number,
+               b.consignee_name, b.consignee_gst, b.consignee_number,
+               b.transport_name, b.transport_gst, b.transport_number, b.transport_id,
+               b.payment_mode, b.no_of_pkg, b.wt, b.rate, b.freight_amount,
+               b.labour_charge, b.bill_charge, b.toll_charge, b.dd_charge,
+               b.other_charge, b.pf_charge, b.total,
+               b.from_city_id, b.to_city_id, b.e_way_bill, b.pvt_marks,
+               b.remark, b.saving_option, b.is_active
+        FROM bilty b
+        WHERE b.branch_id = p_branch_id
+          AND b.is_active = true
+          AND b.consignor_name != 'CANCEL BILTY'
+          AND NOT EXISTS (
+            SELECT 1 FROM transit_details td WHERE td.gr_no = b.gr_no
+          )
+        ORDER BY b.created_at DESC
+      ) ar_sub
+    ), '[]'::json),
+
+    -- Available station bilties (NOT in transit, NOT duplicated in bilty table)
+    'available_station', COALESCE((
+      SELECT json_agg(row_to_json(as_sub))
+      FROM (
+        SELECT s.id, s.gr_no, s.station, s.consignor, s.consignee, s.contents,
+               s.no_of_packets, s.weight, s.payment_status, s.amount, s.pvt_marks,
+               s.delivery_type, s.staff_id, s.branch_id, s.e_way_bill,
+               s.transport_id, s.transport_name, s.transport_gst, s.city_id,
+               s.created_at, s.updated_at
+        FROM station_bilty_summary s
+        WHERE s.branch_id = p_branch_id
+          AND NOT EXISTS (
+            SELECT 1 FROM transit_details td WHERE td.gr_no = s.gr_no
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM bilty b WHERE b.gr_no = s.gr_no
+          )
+        ORDER BY s.created_at DESC
+      ) as_sub
+    ), '[]'::json),
+
+    -- All branches
+    'branches', COALESCE((
+      SELECT json_agg(row_to_json(br)) FROM branches br
+    ), '[]'::json),
+
+    -- All cities
+    'cities', COALESCE((
+      SELECT json_agg(row_to_json(c)) FROM cities c
+    ), '[]'::json),
+
+    -- Permanent details
+    'permanent_details', COALESCE((
+      SELECT json_agg(row_to_json(pd)) FROM permanent_details pd
+    ), '[]'::json)
+
+  ) INTO result;
+
+  RETURN result;
+END;
+$$;
+```
+
+**What the RPC does in 1 call:**
+| Dataset | Filter | JOINs / Notes |
+|---------|--------|---------------|
+| `challan_books` | `is_active=true`, `is_completed=false`, `branch_1/2/3 = branch_id` | none |
+| `challans` | `branch_id`, `is_active=true`, ALL (no limit), non-dispatched first | trucks → truck_number, staff → driver_name/owner_name, users → created_by name |
+| `available_regular` | `branch_id`, `is_active=true`, not CANCEL, NOT EXISTS transit_details | bilty table — full row details |
+| `available_station` | `branch_id`, NOT EXISTS transit_details, NOT EXISTS bilty (dedup) | station_bilty_summary — full row details |
+| `branches` | all | none |
+| `cities` | all | none |
+| `permanent_details` | all | none |
