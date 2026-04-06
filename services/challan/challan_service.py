@@ -347,7 +347,7 @@ def get_challan_init(branch_id: str) -> dict:
     Single RPC replaces 3 API calls (init + list + available).
     Returns: branches, cities, permanent_details, challan_books,
              ALL challans (lightweight, name-resolved),
-             available bilties (regular + station, branch-filtered).
+             available bilties (regular + station, ALL branches — no branch filter).
     Frontend only needs 1 more call: transit bilties for selected challan.
     """
     try:
