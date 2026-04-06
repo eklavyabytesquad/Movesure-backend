@@ -11,25 +11,25 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Import service modules
 from auth.auth_service import get_jwt_token, load_jwt_token
-from services.ewaybill_service import get_ewaybill_details
-from services.consolidated_ewaybill_service import create_consolidated_ewaybill
-from services.transporter_id_service import update_transporter_id
-from services.transporter_update_with_pdf_service import update_transporter_and_get_pdf
-from services.extend_ewaybill_service import extend_ewaybill_validity
-from services.distance_service import get_distance
-from services.gstin_details_service import get_gstin_details
-from services.transporter_details_service import get_transporter_details
-from services.generate_ewaybill_service import generate_ewaybill
-from services.reference_data_service import get_reference_data
-from services.bilty_save_service import save_bilty, get_bilty_with_cities
-from services.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates
-from services.gr_reservation_service import (
+from services.ewaybill.ewaybill_service import get_ewaybill_details
+from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
+from services.ewaybill.transporter_id_service import update_transporter_id
+from services.ewaybill.transporter_update_with_pdf_service import update_transporter_and_get_pdf
+from services.ewaybill.extend_ewaybill_service import extend_ewaybill_validity
+from services.ewaybill.distance_service import get_distance
+from services.ewaybill.gstin_details_service import get_gstin_details
+from services.ewaybill.transporter_details_service import get_transporter_details
+from services.ewaybill.generate_ewaybill_service import generate_ewaybill
+from services.bilty.reference_data_service import get_reference_data
+from services.bilty.bilty_save_service import save_bilty, get_bilty_with_cities
+from services.bilty.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates
+from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
     complete_reservation, extend_reservation, get_branch_gr_status,
     release_all_user_reservations, fix_gr_sequence, cleanup_expired_reservations,
     validate_bill_book,
 )
-from services.master_data_service import (
+from services.bilty.master_data_service import (
     list_records, get_record, create_record, update_record, delete_record,
     bulk_update, bulk_create, bulk_delete,
 )
