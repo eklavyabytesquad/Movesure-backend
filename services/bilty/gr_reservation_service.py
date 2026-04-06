@@ -10,6 +10,27 @@ from services.supabase_client import get_supabase
 RESERVATION_TTL_MINUTES = 30
 
 
+def _find_highest_used_number(used_grs: set, prefix: str, postfix: str) -> int | None:
+    """
+    Parse GR strings and return the highest numeric part.
+    Returns None if used_grs is empty.
+    """
+    if not used_grs:
+        return None
+    prefix_len = len(prefix or "")
+    postfix_len = len(postfix or "")
+    max_num = None
+    for gr in used_grs:
+        try:
+            num_part = gr[prefix_len:] if not postfix_len else gr[prefix_len:-postfix_len]
+            num = int(num_part)
+            if max_num is None or num > max_num:
+                max_num = num
+        except (ValueError, IndexError):
+            continue
+    return max_num
+
+
 def _format_gr(prefix: str, number: int, digits: int, postfix: str = None) -> str:
     """Format a GR number string, e.g. prefix='A', number=8044, digits=5 -> 'A08044'."""
     gr = f"{prefix or ''}{str(number).zfill(digits)}{postfix or ''}"
@@ -267,8 +288,8 @@ def release_reservation(reservation_id: str, user_id: str) -> dict:
 def complete_reservation(reservation_id: str, user_id: str) -> dict:
     """
     Complete a reservation after bilty save.
-    Marks reservation as 'used' and advances bill_books.current_number
-    using GREATEST to prevent regression.
+    Marks reservation as 'used' and sets bill_books.current_number
+    to highest_used_bilty + 1 (safety-checked, prevents drift).
     """
     try:
         sb = get_supabase()
@@ -292,10 +313,27 @@ def complete_reservation(reservation_id: str, user_id: str) -> dict:
             "used_at": now,
         }).eq("id", reservation_id).execute()
 
-        # 2. Advance current_number: only move forward, never backward
+        # 2. Safety check: set current_number = highest_used_bilty + 1
+        #    This is idempotent with save_bilty's safety check — both always
+        #    compute the same value, so no double-increment can occur.
+        new_current = None
         bb = _get_bill_book(sb, bill_book_id)
         if bb:
-            new_current = max(bb["current_number"], gr_number + 1)
+            used_grs = _get_used_gr_numbers(
+                sb, bill_book_id, bb["prefix"], bb["digits"],
+                bb["from_number"], bb["to_number"],
+            )
+            highest = _find_highest_used_number(used_grs, bb["prefix"], bb.get("postfix"))
+            if highest is not None:
+                new_current = highest + 1
+            else:
+                new_current = bb["from_number"]
+            # Wraparound / clamp
+            if new_current > bb["to_number"]:
+                if bb.get("auto_continue"):
+                    new_current = bb["from_number"]
+                else:
+                    new_current = bb["to_number"]
             if new_current != bb["current_number"]:
                 sb.table("bill_books").update({
                     "current_number": new_current,
@@ -307,7 +345,7 @@ def complete_reservation(reservation_id: str, user_id: str) -> dict:
                 "reservation_id": reservation_id,
                 "gr_no": reservation["gr_no"],
                 "used_at": now,
-                "current_number_advanced_to": new_current if bb else None,
+                "new_current_number": new_current,
             },
         }
     except Exception as e:
@@ -449,20 +487,11 @@ def fix_gr_sequence(bill_book_id: str, correct_number: int = None) -> dict:
                 sb, bill_book_id, bb["prefix"], bb["digits"],
                 bb["from_number"], bb["to_number"],
             )
-            if not used_grs:
-                new_current = bb["from_number"]
+            highest = _find_highest_used_number(used_grs, bb["prefix"], bb.get("postfix"))
+            if highest is not None:
+                new_current = highest + 1
             else:
-                # Parse numeric parts from used GR strings
-                prefix_len = len(bb["prefix"] or "")
-                postfix_len = len(bb.get("postfix") or "")
-                max_num = bb["from_number"]
-                for gr in used_grs:
-                    try:
-                        num_part = gr[prefix_len:] if not postfix_len else gr[prefix_len:-postfix_len]
-                        max_num = max(max_num, int(num_part))
-                    except (ValueError, IndexError):
-                        continue
-                new_current = max_num + 1
+                new_current = bb["from_number"]
 
             # Also check reservations — don't set current_number below any active reservation
             reservations = _get_active_reservations(sb, bb.get("branch_id", ""), bill_book_id)

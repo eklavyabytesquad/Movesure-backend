@@ -12,6 +12,46 @@ from services.supabase_client import get_supabase
 _bg_pool = ThreadPoolExecutor(max_workers=4)
 
 
+def _extract_gr_number(gr_no: str, prefix: str, postfix: str, digits: int) -> int | None:
+    """Extract the raw numeric part from a formatted GR string.
+    e.g. gr_no='A08044', prefix='A', digits=5 -> 8044
+    """
+    try:
+        prefix_len = len(prefix or "")
+        postfix_len = len(postfix or "")
+        num_part = gr_no[prefix_len:] if not postfix_len else gr_no[prefix_len:-postfix_len]
+        return int(num_part)
+    except (ValueError, IndexError):
+        return None
+
+
+def _get_highest_used_gr(sb, prefix: str, digits: int, postfix: str, from_num: int, to_num: int) -> int | None:
+    """
+    Safety checker: find the highest GR number (raw numeric part) that
+    exists as a saved active bilty within this bill book's GR range.
+    Returns None if no bilties exist yet.
+    Uses string ordering on zero-padded GR numbers (safe because padding is fixed).
+    """
+    prefix_str = prefix or ""
+    postfix_str = postfix or ""
+    gr_start = f"{prefix_str}{str(from_num).zfill(digits)}{postfix_str}"
+    gr_end = f"{prefix_str}{str(to_num).zfill(digits)}{postfix_str}"
+
+    resp = (
+        sb.table("bilty")
+        .select("gr_no")
+        .gte("gr_no", gr_start)
+        .lte("gr_no", gr_end)
+        .eq("is_active", True)
+        .order("gr_no", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    return _extract_gr_number(resp.data[0]["gr_no"], prefix, postfix, digits)
+
+
 def _resolve_city(sb, city_id: str) -> dict | None:
     """Look up a city by ID. Returns {id, city_name, city_code} or None."""
     if not city_id:
@@ -278,6 +318,53 @@ def save_bilty(data: dict) -> dict:
 
         saved_bilty = result.data[0]
 
+        # === SAFETY CHECK & ADVANCE current_number (server-owned, blocking) ===
+        # The backend is the SOLE authority on current_number.
+        # After inserting the bilty, we query the DB for the actual highest
+        # used GR number and set current_number = highest + 1.  This prevents:
+        #   - Double increment (save + complete_reservation both advancing)
+        #   - Drift (current_number jumping ahead by more than 1)
+        #   - Stale state (frontend sending a wrong value)
+        #   - Same-as-last (current_number equalling an already-used GR)
+        # Rule: current_number MUST always be exactly last_used_gr + 1.
+        new_current_number = None
+        bill_book_id = data.get("bill_book_id")
+        if not bilty_id and bill_book_id:
+            try:
+                bb = sb.table("bill_books").select(
+                    "id, prefix, postfix, digits, current_number, from_number, to_number, auto_continue"
+                ).eq("id", bill_book_id).single().execute().data
+                if bb:
+                    highest = _get_highest_used_gr(
+                        sb, bb["prefix"], bb["digits"], bb.get("postfix"),
+                        bb["from_number"], bb["to_number"]
+                    )
+                    if highest is not None:
+                        correct = highest + 1
+                    else:
+                        correct = bb["from_number"]
+
+                    # Wraparound if auto_continue is enabled
+                    if correct > bb["to_number"]:
+                        if bb.get("auto_continue"):
+                            correct = bb["from_number"]
+                        else:
+                            correct = bb["to_number"]
+
+                    new_current_number = correct
+                    old_current = bb["current_number"]
+                    if new_current_number != old_current:
+                        sb.table("bill_books").update(
+                            {"current_number": new_current_number}
+                        ).eq("id", bill_book_id).execute()
+                        print(
+                            f"\U0001f6e1 Safety check: corrected current_number "
+                            f"{old_current} → {new_current_number} "
+                            f"(highest used GR = {highest})"
+                        )
+            except Exception as bb_err:
+                print(f"Bill book safety check error: {bb_err}")
+
         # === POST-SAVE: Run in BACKGROUND (non-blocking, response returns immediately) ===
         def _post_save():
             try:
@@ -288,13 +375,6 @@ def save_bilty(data: dict) -> dict:
                 # Auto-save rate
                 if saving_option == "SAVE" and data.get("rate"):
                     _auto_save_rate(_sb, branch_id, to_city_id, consignor_name, data.get("rate"))
-                # Update bill book
-                bill_book_id = data.get("bill_book_id")
-                next_number = data.get("bill_book_next_number")
-                if not bilty_id and bill_book_id and next_number:
-                    _sb.table("bill_books").update(
-                        {"current_number": int(next_number)}
-                    ).eq("id", bill_book_id).execute()
             except Exception as bg_err:
                 print(f"Background post-save error: {bg_err}")
 
@@ -302,7 +382,9 @@ def save_bilty(data: dict) -> dict:
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # This is the key: frontend gets city names back from server
-        # and uses THESE for PDF — no fallback defaults needed
+        # and uses THESE for PDF — no fallback defaults needed.
+        # Also returns new_current_number so frontend can sync local state
+        # from the server instead of calculating it.
         return {
             "status": "success",
             "message": "Bilty saved successfully",
@@ -310,6 +392,7 @@ def save_bilty(data: dict) -> dict:
                 "bilty": saved_bilty,
                 "from_city": from_city,
                 "to_city": to_city,
+                "new_current_number": new_current_number,
             },
         }
 

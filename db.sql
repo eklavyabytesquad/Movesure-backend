@@ -263,6 +263,10 @@ CREATE TABLE public.cities (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   city_code character varying NOT NULL UNIQUE,
   city_name character varying NOT NULL,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT cities_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.complaints (
@@ -299,6 +303,10 @@ CREATE TABLE public.consignees (
   gst_num character varying,
   adhar character varying,
   pan character varying,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT consignees_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.consignor_bilty_profile (
@@ -366,6 +374,10 @@ CREATE TABLE public.consignors (
   gst_num character varying,
   adhar character varying,
   pan character varying,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT consignors_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.consolidated_ewb_validations (
@@ -704,6 +716,10 @@ CREATE TABLE public.rates (
   consignor_id uuid,
   rate numeric NOT NULL,
   is_default boolean DEFAULT false,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT rates_pkey PRIMARY KEY (id),
   CONSTRAINT rates_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
   CONSTRAINT rates_city_id_fkey FOREIGN KEY (city_id) REFERENCES public.cities(id)
@@ -962,6 +978,9 @@ CREATE TABLE public.transports (
   transport_admin_id uuid,
   created_by character varying,
   updated_by character varying,
+  is_prior boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT transports_pkey PRIMARY KEY (id),
   CONSTRAINT transports_city_id_fkey FOREIGN KEY (city_id) REFERENCES public.cities(id),
   CONSTRAINT transports_transport_admin_id_fkey FOREIGN KEY (transport_admin_id) REFERENCES public.transport_admin(transport_id)

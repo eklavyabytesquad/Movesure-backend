@@ -159,7 +159,15 @@ The frontend uses the **response city data** for PDF generation — never hardco
 **Speed:** ~100-200ms total  
 - City validation + GR dup check run **in parallel** (~1 round-trip)  
 - INSERT/UPDATE bilty (~1 round-trip)  
-- Rate save + bill book update run **in background** (non-blocking)
+- Safety check & advance `current_number` (~1 round-trip, blocking — returns new value)  
+- Rate save runs **in background** (non-blocking)
+
+> **`current_number` Safety Checker:** The backend is the **sole authority** on
+> `bill_books.current_number`. After inserting the bilty, it queries the DB for
+> the actual highest used GR number and sets `current_number = highest + 1`.
+> This auto-corrects drift in **either direction** — if `current_number` somehow
+> jumped ahead by +4, it snaps back to `last_bilty + 1`. The frontend should
+> **never** calculate or send `bill_book_next_number`.
 
 **Request Body:**
 ```json
@@ -203,8 +211,7 @@ The frontend uses the **response city data** for PDF generation — never hardco
   "total": 6270,
   "remark": "",
   "saving_option": "SAVE",
-  "bill_book_id": "uuid (for updating bill book current_number)",
-  "bill_book_next_number": 8045
+  "bill_book_id": "uuid (backend uses this to advance current_number safely)"
 }
 ```
 
@@ -241,7 +248,8 @@ For **editing** an existing bilty, add:
       "id": "uuid",
       "city_name": "KANPUR",
       "city_code": "KNP"
-    }
+    },
+    "new_current_number": 8045
   }
 }
 ```
@@ -297,9 +305,8 @@ async function handleSave() {
         remark: formData.remark,
         delivery_type: formData.delivery_type,
         saving_option: 'SAVE',
-        // For bill book update
+        // For bill book — backend auto-advances current_number
         bill_book_id: selectedBillBook?.id,
-        bill_book_next_number: nextGrNumber,
         // For edit mode
         ...(editMode && formData.bilty_id ? { bilty_id: formData.bilty_id } : {}),
       }),
@@ -316,6 +323,15 @@ async function handleSave() {
     const savedBilty = result.data.bilty;
     const fromCity = result.data.from_city;  // { id, city_name, city_code }
     const toCity = result.data.to_city;      // { id, city_name, city_code }
+
+    // ✅ Sync local bill book state from server (NEVER calculate locally)
+    const serverCurrentNumber = result.data.new_current_number;
+    if (serverCurrentNumber != null) {
+      setSelectedBillBook(prev => ({
+        ...prev,
+        current_number: serverCurrentNumber
+      }));
+    }
 
     // Pass to PDF generation — guaranteed correct
     // No more || 'DEORIA' fallback needed!
@@ -685,3 +701,23 @@ curl "http://localhost:5000/api/bilty/rates/default?branch_id=YOUR_BRANCH_UUID"
 ```bash
 curl "http://localhost:5000/api/bilty/rates/all?consignor_id=YOUR_CONSIGNOR_UUID&branch_id=YOUR_BRANCH_UUID"
 ```
+
+
+  // 1. STOP calculating billBookNextNumber locally
+- let billBookNextNumber = selectedBillBook.current_number + 1;
+
+  // 2. STOP sending it in the payload
+- bill_book_next_number: billBookNextNumber,
+
+  // 3. READ from server response
++ const serverCurrentNumber = result.data.new_current_number;
+
+  // 4. SYNC local state from server
++ if (serverCurrentNumber != null) {
++   setSelectedBillBook(prev => ({
++     ...prev, current_number: serverCurrentNumber
++   }));
++ }
+- setSelectedBillBook(prev => ({
+-   ...prev, current_number: billBookNextNumber
+- }));
