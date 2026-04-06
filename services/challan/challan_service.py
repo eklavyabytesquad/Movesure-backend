@@ -338,3 +338,66 @@ def delete_challan(challan_id: str) -> dict:
         return {"status": "success", "message": "Challan deleted"}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── INIT (combined page-load fetch) ──────────────────────────
+
+def get_challan_init(branch_id: str) -> dict:
+    """
+    Single endpoint for challan page init.
+    Combines: branches, cities, permanent_details, challans, challan_books.
+    Replaces 6+ frontend requests with 1.
+    """
+    try:
+        sb = get_supabase()
+
+        # 1. All branches
+        br_resp = sb.table("branches").select("*").execute()
+        branches = br_resp.data or []
+
+        # 2. User's branch
+        user_branch = next((b for b in branches if b["id"] == branch_id), None)
+
+        # 3. All cities
+        city_resp = sb.table("cities").select("*").execute()
+        cities = city_resp.data or []
+
+        # 4. Permanent details
+        pd_resp = sb.table("permanent_details").select("*").execute()
+        permanent_details = pd_resp.data or []
+
+        # 5. Challan books (for user's branch, active + incomplete)
+        bk_q = sb.table("challan_books").select(
+            "id, prefix, from_number, to_number, digits, postfix, "
+            "current_number, from_branch_id, to_branch_id, "
+            "branch_1, branch_2, branch_3, "
+            "is_active, is_completed, is_fixed, auto_continue, "
+            "created_by, created_at, updated_at"
+        ).eq("is_active", True).eq("is_completed", False).or_(
+            f"branch_1.eq.{branch_id},"
+            f"branch_2.eq.{branch_id},"
+            f"branch_3.eq.{branch_id}"
+        ).order("created_at", desc=True).execute()
+        challan_books = bk_q.data or []
+
+        # 6. Active challans for this branch
+        ch_q = sb.table("challan_details").select(
+            CHALLAN_COLS, count="exact"
+        ).eq("branch_id", branch_id).eq("is_active", True).eq(
+            "is_dispatched", False
+        ).order("created_at", desc=True).execute()
+        challans = _resolve_names(ch_q.data or [])
+
+        return {
+            "status": "success",
+            "data": {
+                "user_branch": user_branch,
+                "branches": branches,
+                "cities": cities,
+                "permanent_details": permanent_details,
+                "challan_books": challan_books,
+                "challans": challans,
+            },
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}

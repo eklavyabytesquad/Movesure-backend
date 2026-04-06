@@ -39,6 +39,7 @@ from services.challan.challan_book_service import (
 from services.challan.challan_service import (
     list_challans, get_challan, create_challan, update_challan,
     dispatch_challan, undispatch_challan, mark_hub_received, delete_challan,
+    get_challan_init,
 )
 from services.challan.transit_service import (
     get_available_bilties, get_transit_bilties, add_to_transit,
@@ -694,6 +695,17 @@ async def challan_book_update(request: Request, book_id: str = Path(...)):
 
 
 # ── Challans ──────────────────────────────────────────────────
+
+@app.get("/api/challan/init")
+async def challan_init(
+    branch_id: str = Query(...),
+):
+    try:
+        result = await _run(get_challan_init, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
 
 @app.get("/api/challan/list")
 async def challans_list(

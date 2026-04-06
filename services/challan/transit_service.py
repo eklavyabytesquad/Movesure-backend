@@ -78,6 +78,7 @@ def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
                 for b in (bq.data or []):
                     if b.get("consignor_name") != "CANCEL BILTY":
                         b["source_table"] = "bilty"
+                        b["bilty_type"] = "reg"
                         bilty_detail_map[b["gr_no"]] = b
 
         # 4. Fetch full details for station GRs
@@ -94,6 +95,7 @@ def get_available_bilties(page: int = 1, page_size: int = PAGE_SIZE,
                 ).in_("gr_no", chunk).execute()
                 for s in (sq.data or []):
                     s["source_table"] = "station_bilty_summary"
+                    s["bilty_type"] = "mnl"
                     station_detail_map[s["gr_no"]] = s
 
         # 5. Merge: build final list preserving RPC order (sorted by gr_no)
@@ -200,6 +202,7 @@ def get_transit_bilties(challan_no: str, page: int = 1,
                 r["e_way_bill"] = b.get("e_way_bill")
                 r["pvt_marks"] = b.get("pvt_marks")
                 r["source_table"] = "bilty"
+                r["bilty_type"] = "reg"
             elif r["gr_no"] in station_map:
                 s = station_map[r["gr_no"]]
                 r["consignor_name"] = s.get("consignor")
@@ -213,6 +216,7 @@ def get_transit_bilties(challan_no: str, page: int = 1,
                 r["e_way_bill"] = s.get("e_way_bill")
                 r["pvt_marks"] = s.get("pvt_marks")
                 r["source_table"] = "station_bilty_summary"
+                r["bilty_type"] = "mnl"
 
         return {
             "status": "success",
