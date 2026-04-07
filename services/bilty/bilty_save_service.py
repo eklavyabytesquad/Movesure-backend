@@ -281,20 +281,33 @@ def save_bilty(data: dict) -> dict:
             "saving_option": saving_option,
         }
 
-        # Remove None values to let DB defaults apply
-        bilty_row = {k: v for k, v in bilty_row.items() if v is not None}
-
         # === SAVE ===
         if bilty_id:
             # UPDATE existing bilty
+            # For updates, keep None values so fields can be CLEARED (e.g. removing e_way_bill).
+            # Only strip keys that were not sent in the request at all.
+            nullable_fields = [
+                "e_way_bill", "invoice_no", "invoice_value", "invoice_date",
+                "document_number", "remark", "pvt_marks", "transport_id",
+                "consignor_gst", "consignor_number", "consignee_gst", "consignee_number",
+                "transport_gst", "transport_number",
+            ]
+            update_row = {}
+            for k, v in bilty_row.items():
+                if v is not None:
+                    update_row[k] = v
+                elif k in nullable_fields and k in data:
+                    # Field was explicitly sent as null/empty → set to None to clear it
+                    update_row[k] = None
             result = (
                 sb.table("bilty")
-                .update(bilty_row)
+                .update(update_row)
                 .eq("id", bilty_id)
                 .execute()
             )
         else:
-            # INSERT new bilty
+            # INSERT new bilty — remove None values to let DB defaults apply
+            bilty_row = {k: v for k, v in bilty_row.items() if v is not None}
             result = sb.table("bilty").insert(bilty_row).execute()
 
         if not result.data:

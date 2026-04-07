@@ -223,6 +223,17 @@ For **editing** an existing bilty, add:
 }
 ```
 
+> **Clearing fields on update:** To clear a nullable field (e.g. remove an e-way bill),
+> send it explicitly as `null` or `""`. The backend preserves `null` values for these
+> clearable fields on updates: `e_way_bill`, `invoice_no`, `invoice_value`, `invoice_date`,
+> `document_number`, `remark`, `pvt_marks`, `transport_id`, `consignor_gst`,
+> `consignor_number`, `consignee_gst`, `consignee_number`, `transport_gst`, `transport_number`.
+>
+> Example — remove e-way bill:
+> ```json
+> { "bilty_id": "uuid", "e_way_bill": null, ...other fields }
+> ```
+
 **Response:**
 ```json
 {
