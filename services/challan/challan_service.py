@@ -130,8 +130,8 @@ def get_challan(challan_id: str) -> dict:
 def create_challan(data: dict) -> dict:
     """
     Create a new challan from a challan book.
-    Required: challan_book_id, branch_id, truck_id, driver_id, created_by
-    Optional: owner_id, date, remarks
+    Required: challan_book_id, branch_id, created_by
+    Optional: truck_id, driver_id, owner_id, date, remarks
     """
     try:
         sb = get_supabase()
@@ -139,7 +139,7 @@ def create_challan(data: dict) -> dict:
         if not book_id:
             return {"status": "error", "message": "challan_book_id is required", "status_code": 400}
 
-        required = ["branch_id", "truck_id", "driver_id", "created_by"]
+        required = ["branch_id", "created_by"]
         missing = [f for f in required if not data.get(f)]
         if missing:
             return {"status": "error", "message": f"Missing fields: {', '.join(missing)}", "status_code": 400}
@@ -164,9 +164,9 @@ def create_challan(data: dict) -> dict:
         challan_data = {
             "challan_no": challan_no,
             "branch_id": data["branch_id"],
-            "truck_id": data["truck_id"],
+            "truck_id": data.get("truck_id"),
             "owner_id": data.get("owner_id"),
-            "driver_id": data["driver_id"],
+            "driver_id": data.get("driver_id"),
             "date": data.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d")),
             "total_bilty_count": 0,
             "remarks": data.get("remarks"),

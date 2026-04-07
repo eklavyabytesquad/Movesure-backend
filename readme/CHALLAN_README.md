@@ -210,8 +210,8 @@ const res = await fetch(`${API}/api/challan/create`, {
   body: JSON.stringify({
     challan_book_id: 'book-uuid',   // REQUIRED — auto-generates challan_no
     branch_id: user.branch_id,       // REQUIRED
-    truck_id: 'truck-uuid',          // REQUIRED
-    driver_id: 'driver-uuid',        // REQUIRED
+    truck_id: 'truck-uuid',          // optional
+    driver_id: 'driver-uuid',        // optional
     owner_id: 'owner-uuid',          // optional
     date: '2026-04-06',              // optional, defaults to today
     remarks: 'Special delivery',     // optional
