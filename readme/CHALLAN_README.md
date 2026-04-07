@@ -75,12 +75,14 @@ One RPC call (`get_challan_page_init`) replaces 3 API requests — returns refer
 ```js
 const res = await fetch(`${API}/api/challan/init?branch_id=${user.branch_id}`);
 const { data } = await res.json();
-// data.user_branch        = { id, name, ... }           ← user's branch
-// data.branches           = [{ id, name, ... }, ...]    ← all branches
-// data.cities             = [{ id, name, ... }, ...]    ← all cities
-// data.permanent_details  = [{ ... }]                   ← company details (PDF header)
-// data.challan_books      = [{ id, prefix, ... }, ...]  ← active books for THIS branch only
-// data.challans           = [{                          ← ALL active challans (non-dispatched first)
+// data.user_branch                  = { id, name, ... }           ← user's branch
+// data.user_permanent_details       = { transport_name, transport_address, ... } ← PDF header for user's branch
+// data.branches                     = [{ id, name, ... }, ...]    ← all branches
+// data.cities                       = [{ id, name, ... }, ...]    ← all cities
+// data.permanent_details            = [{ ... }]                   ← ALL company details
+// data.permanent_details_by_branch_id = { "branch-uuid": { ... } } ← lookup by branch_id (for PDF)
+// data.challan_books                = [{ id, prefix, ... }, ...]  ← active books for THIS branch only
+// data.challans                     = [{                          ← ALL active challans (non-dispatched first)
 //     id, challan_no, truck_number, driver_name, owner_name,
 //     is_dispatched, dispatch_date, total_bilty_count, ...
 //   }]
@@ -88,6 +90,20 @@ const { data } = await res.json();
 // data.regular_count      = 120   ← count of "reg" bilties
 // data.station_count      = 45    ← count of "mnl" bilties
 ```
+
+> **PDF Header — use `user_permanent_details` or `permanent_details_by_branch_id`:**
+> The `permanent_details` array contains entries for **all** branches. Each entry has a `branch_id`.
+> For the challan PDF header, use the entry matching the **challan's `branch_id`** (the FROM branch):
+> ```js
+> // ✅ CORRECT — use the challan's branch_id to pick the right company details
+> const challanBranchId = selectedChallan.branch_id;
+> const pdfHeader = data.permanent_details_by_branch_id[challanBranchId];
+> // pdfHeader.transport_name    → "S S TRANSPORT - SASNI GATE"
+> // pdfHeader.transport_address → "BHOJPURA, SASNI GATE, ALIGARH - 202001"
+>
+> // ❌ WRONG — don't use permanent_details[0] or a hardcoded index
+> // const pdfHeader = data.permanent_details[0]; // BUG: picks wrong branch!
+> ```
 
 **Key points:**
 - **Challans** — ALL active challans (no limit), lightweight fields only (challan_no, dispatch details, bilty count, truck/driver/owner names). Sorted: non-dispatched first, then dispatched, both by `created_at DESC`.
@@ -711,3 +727,5 @@ $$;
 | `branches` | all | none |
 | `cities` | all | none |
 | `permanent_details` | all | none |
+| `permanent_details_by_branch_id` | all (keyed by branch_id) | server-side lookup map |
+| `user_permanent_details` | single entry for `branch_id` | convenience field for PDF header |

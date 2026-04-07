@@ -27,6 +27,8 @@ Step 4 → GET /api/challan/transit/bilties/{challan_no}       (transit bilties 
 | `branches` | All (no filter) | `branches` | ChallanSelector (branch names), BiltyList (branch filter) |
 | `cities` | All (no filter) | `cities` | BiltyList (city filter) |
 | `permanent_details` | All (company details) | `permanentDetails` | ChallanPDFPreview (company name, logo, address) |
+| `permanent_details_by_branch_id` | All (keyed by branch_id) | `permDetailsByBranch` | **PDF header — use `permDetailsByBranch[challan.branch_id]`** |
+| `user_permanent_details` | User's branch only | `userPermanentDetails` | Quick access to user's own branch company details |
 | `challan_books` | `is_active=true`, `is_completed=false`, `branch_1/2/3 = branch_id` | `challanBooks` | ChallanSelector book dropdown — **only books assigned to user's branch** |
 
 > **Note:** Init also returns `challans` (last 50) but we **ignore** those and fetch all challans in Step 2 instead.

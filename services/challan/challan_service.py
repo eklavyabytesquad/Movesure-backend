@@ -368,13 +368,26 @@ def get_challan_init(branch_id: str) -> dict:
             s["source_table"] = "station_bilty_summary"
             s["bilty_type"] = "mnl"
 
+        # Build permanent_details lookup by branch_id for easy PDF header resolution
+        perm_details = rpc_data.get("permanent_details") or []
+        perm_by_branch = {}
+        for pd in perm_details:
+            bid = pd.get("branch_id")
+            if bid:
+                perm_by_branch[bid] = pd
+
+        # user's own branch permanent details (convenience field for PDF)
+        user_permanent_details = perm_by_branch.get(branch_id)
+
         return {
             "status": "success",
             "data": {
                 "user_branch": user_branch,
+                "user_permanent_details": user_permanent_details,
                 "branches": branches,
                 "cities": rpc_data.get("cities") or [],
-                "permanent_details": rpc_data.get("permanent_details") or [],
+                "permanent_details": perm_details,
+                "permanent_details_by_branch_id": perm_by_branch,
                 "challan_books": rpc_data.get("challan_books") or [],
                 "challans": rpc_data.get("challans") or [],
                 "available_bilties": regular + station,
