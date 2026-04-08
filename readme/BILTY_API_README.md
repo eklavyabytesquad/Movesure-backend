@@ -157,10 +157,17 @@ function onToCityCodeChange(cityCode) {
 The frontend uses the **response city data** for PDF generation — never hardcoded fallbacks.
 
 **Speed:** ~100-200ms total  
-- City validation + GR dup check run **in parallel** (~1 round-trip)  
+- City validation + GR dup check + invoice dup check run **in parallel** (~1 round-trip)  
 - INSERT/UPDATE bilty (~1 round-trip)  
 - Safety check & advance `current_number` (~1 round-trip, blocking — returns new value)  
 - Rate save runs **in background** (non-blocking)
+
+> **Duplicate Invoice Guard:** On new bilty creation, the backend checks if an active bilty
+> already exists with the **same consignor name + same invoice number**. If so, the save is
+> rejected with HTTP 409. This prevents accidental double-saves (e.g. frontend auto-triggering
+> a second save). The check only applies when both `consignor_name` and `invoice_no` are
+> provided and non-empty. Multiple users saving different consignors simultaneously is
+> unaffected.
 
 > **`current_number` Safety Checker:** The backend is the **sole authority** on
 > `bill_books.current_number`. After inserting the bilty, it queries the DB for
@@ -259,9 +266,7 @@ For **editing** an existing bilty, add:
       "id": "uuid",
       "city_name": "KANPUR",
       "city_code": "KNP"
-    },
-    "new_current_number": 8045,
-    "next_gr_no": "A08045"
+    }
   }
 }
 ```
@@ -336,22 +341,6 @@ async function handleSave() {
     const fromCity = result.data.from_city;  // { id, city_name, city_code }
     const toCity = result.data.to_city;      // { id, city_name, city_code }
 
-    // ✅ Sync local bill book state from server (NEVER calculate locally)
-    const serverCurrentNumber = result.data.new_current_number;
-    if (serverCurrentNumber != null) {
-      setSelectedBillBook(prev => ({
-        ...prev,
-        current_number: serverCurrentNumber
-      }));
-    }
-
-    // ✅ Use next_gr_no from save response — eliminates need for /next-available call
-    // This makes rapid bilty creation reliable even under connection pressure.
-    const nextGrNo = result.data.next_gr_no;
-    if (nextGrNo && !editMode) {
-      setFormData(prev => ({ ...prev, gr_no: nextGrNo }));
-    }
-
     // Pass to PDF generation — guaranteed correct
     // No more || 'DEORIA' fallback needed!
     showPrintModal({
@@ -360,7 +349,7 @@ async function handleSave() {
       toCity,     // { city_name: "KANPUR", city_code: "KNP" }
     });
 
-    // Reset form for next bilty
+    // Reset form for next bilty — frontend calls /next-available for next GR
     if (!editMode) {
       resetForm();
     }
@@ -649,7 +638,7 @@ All endpoints return errors in the same format:
 | HTTP Code | Meaning |
 |-----------|---------|
 | 400 | Missing required fields or invalid city_id |
-| 409 | Duplicate GR number for this branch |
+| 409 | Duplicate GR number for this branch, OR duplicate consignor + invoice_no combination |
 | 500 | Server error |
 
 ---
@@ -661,7 +650,7 @@ All endpoints return errors in the same format:
 | Page load data | 8 Supabase calls sequential ~2-3s | 1 API call, 7 parallel queries ~200-400ms |
 | Save bilty | Direct Supabase + re-fetch cities | 1 API call, parallel validation ~100-200ms |
 | PDF city data | Re-fetches from Supabase (fails on slow network) | Returned in save response (guaranteed) |
-| Next GR after save | Separate `/next-available` call (can fail under load) | `next_gr_no` returned in save response (guaranteed) |
+| Next GR after save | Separate `/next-available` call (can fail under load) | Frontend calls `/next-available` after save (no auto-fill from response) |
 | Rate save | Blocking (adds ~100ms to save) | Background (non-blocking, retries on connection error) |
 | Bill book update | Frontend-calculated (stale, can drift) | Server safety-checked: always `highest_used + 1` |
 | Consignor rates | Frontend fetches one by one | 1 API call with city lookup map |
@@ -723,21 +712,5 @@ curl "http://localhost:5000/api/bilty/rates/all?consignor_id=YOUR_CONSIGNOR_UUID
 ```
 
 
-  // 1. STOP calculating billBookNextNumber locally
-- let billBookNextNumber = selectedBillBook.current_number + 1;
-
-  // 2. STOP sending it in the payload
-- bill_book_next_number: billBookNextNumber,
-
-  // 3. READ from server response
-+ const serverCurrentNumber = result.data.new_current_number;
-
-  // 4. SYNC local state from server
-+ if (serverCurrentNumber != null) {
-+   setSelectedBillBook(prev => ({
-+     ...prev, current_number: serverCurrentNumber
-+   }));
-+ }
-- setSelectedBillBook(prev => ({
--   ...prev, current_number: billBookNextNumber
-- }));
+  // 1. Frontend calls /next-available for next GR — no local calculation
+  // 2. Backend safety-checks current_number = highest_used + 1

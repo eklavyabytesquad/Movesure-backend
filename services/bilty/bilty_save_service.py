@@ -181,12 +181,16 @@ def save_bilty(data: dict) -> dict:
         if not gr_no:
             return {"status": "error", "message": "gr_no is required", "status_code": 400}
 
-        # === PARALLEL: City resolution + GR dup check ===
+        # === PARALLEL: City resolution + GR dup check + Invoice dup check ===
         from_city = None
         to_city = None
         dup_exists = False
+        invoice_dup = None  # will hold gr_no of existing bilty if duplicate
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        consignor_name_raw = data.get("consignor_name")
+        invoice_no_raw = data.get("invoice_no")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {}
             if from_city_id:
                 futures[pool.submit(_resolve_city, sb, from_city_id)] = "from_city"
@@ -206,6 +210,23 @@ def save_bilty(data: dict) -> dict:
                     return bool(r.data)
                 futures[pool.submit(check_dup)] = "dup_check"
 
+            # Invoice dedup: same consignor + same invoice_no should not exist
+            if not bilty_id and consignor_name_raw and invoice_no_raw:
+                def check_invoice_dup():
+                    r = (
+                        sb.table("bilty")
+                        .select("gr_no")
+                        .ilike("consignor_name", consignor_name_raw.strip())
+                        .eq("invoice_no", invoice_no_raw.strip())
+                        .eq("is_active", True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if r.data:
+                        return r.data[0]["gr_no"]
+                    return None
+                futures[pool.submit(check_invoice_dup)] = "invoice_dup"
+
             for future in futures:
                 key = futures[future]
                 if key == "from_city":
@@ -214,6 +235,8 @@ def save_bilty(data: dict) -> dict:
                     to_city = future.result()
                 elif key == "dup_check":
                     dup_exists = future.result()
+                elif key == "invoice_dup":
+                    invoice_dup = future.result()
 
         if from_city_id and not from_city:
             return {
@@ -233,9 +256,20 @@ def save_bilty(data: dict) -> dict:
                 "message": f"GR number {gr_no} already exists for this branch",
                 "status_code": 409,
             }
+        if invoice_dup:
+            print(
+                f"\U0001f6ab Invoice dedup: blocked save of GR {gr_no} "
+                f"(consignor '{consignor_name_raw}' + invoice '{invoice_no_raw}' "
+                f"already used in GR {invoice_dup})"
+            )
+            return {
+                "status": "error",
+                "message": f"Duplicate invoice: consignor '{consignor_name_raw}' with invoice '{invoice_no_raw}' already exists in GR {invoice_dup}",
+                "status_code": 409,
+            }
 
         # === EXTRACT PARTY NAMES (needed for bilty row + background tasks) ===
-        consignor_name = data.get("consignor_name")
+        consignor_name = consignor_name_raw
         consignee_name = data.get("consignee_name")
 
         # === BUILD BILTY RECORD ===
@@ -366,12 +400,10 @@ def save_bilty(data: dict) -> dict:
             except Exception as bb_err:
                 print(f"Bill book safety check error: {bb_err}")
 
-        # === COMPUTE NEXT GR (returned so frontend doesn't need a separate call) ===
-        next_gr_no = None
-        if new_current_number is not None and bb:
-            next_gr_no = _format_gr(
-                bb["prefix"], new_current_number, bb["digits"], bb.get("postfix")
-            )
+        # NOTE: next_gr_no intentionally NOT returned in the response.
+        # The frontend must call GET /api/bilty/gr/next-available instead.
+        # Returning it here caused the frontend to auto-fill the next GR
+        # and accidentally trigger a second save.
 
         # === POST-SAVE: Run in BACKGROUND (non-blocking, response returns immediately) ===
         def _post_save():
@@ -398,10 +430,8 @@ def save_bilty(data: dict) -> dict:
         _bg_pool.submit(_post_save)
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
-        # This is the key: frontend gets city names back from server
-        # and uses THESE for PDF — no fallback defaults needed.
-        # Also returns new_current_number + next_gr_no so frontend can
-        # immediately show the next GR without calling /next-available.
+        # Frontend gets city names back from server for PDF generation.
+        # next_gr_no is NOT included — frontend calls /next-available.
         return {
             "status": "success",
             "message": "Bilty saved successfully",
@@ -409,8 +439,6 @@ def save_bilty(data: dict) -> dict:
                 "bilty": saved_bilty,
                 "from_city": from_city,
                 "to_city": to_city,
-                "new_current_number": new_current_number,
-                "next_gr_no": next_gr_no,
             },
         }
 
