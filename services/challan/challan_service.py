@@ -367,6 +367,7 @@ def get_challan_init(branch_id: str) -> dict:
         for s in station:
             s["source_table"] = "station_bilty_summary"
             s["bilty_type"] = "mnl"
+            s["bilty_date"] = s.get("created_at")
 
         # Build permanent_details lookup by branch_id for easy PDF header resolution
         perm_details = rpc_data.get("permanent_details") or []
