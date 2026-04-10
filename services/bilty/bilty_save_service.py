@@ -6,6 +6,7 @@ never has to rely on network during PDF generation.
 Optimized with parallel DB calls for maximum speed.
 """
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from time import sleep
 from services.supabase_client import get_supabase
 
@@ -363,6 +364,7 @@ def save_bilty(data: dict) -> dict:
         #   - Same-as-last (current_number equalling an already-used GR)
         # Rule: current_number MUST always be exactly last_used_gr + 1.
         new_current_number = None
+        next_gr_no = None
         bill_book_id = data.get("bill_book_id")
         if not bilty_id and bill_book_id:
             try:
@@ -397,13 +399,36 @@ def save_bilty(data: dict) -> dict:
                             f"{old_current} → {new_current_number} "
                             f"(highest used GR = {highest})"
                         )
+
+                    # Build next_gr_no: skip reserved GR numbers
+                    prefix = bb.get("prefix") or ""
+                    postfix = bb.get("postfix") or ""
+                    digits = bb.get("digits") or 0
+
+                    # Fetch active reservations for this bill book
+                    now_ts = datetime.now(timezone.utc).isoformat()
+                    res_resp = (
+                        sb.table("gr_reservations")
+                        .select("gr_no")
+                        .eq("bill_book_id", bill_book_id)
+                        .eq("status", "reserved")
+                        .gte("expires_at", now_ts)
+                        .execute()
+                    )
+                    reserved_grs = {r["gr_no"] for r in (res_resp.data or [])}
+
+                    # Find the first non-reserved number starting from new_current_number
+                    candidate = new_current_number
+                    to_num = bb["to_number"]
+                    while candidate <= to_num:
+                        gr_str = _format_gr(prefix, candidate, digits, postfix)
+                        if gr_str not in reserved_grs:
+                            next_gr_no = gr_str
+                            break
+                        candidate += 1
+
             except Exception as bb_err:
                 print(f"Bill book safety check error: {bb_err}")
-
-        # NOTE: next_gr_no intentionally NOT returned in the response.
-        # The frontend must call GET /api/bilty/gr/next-available instead.
-        # Returning it here caused the frontend to auto-fill the next GR
-        # and accidentally trigger a second save.
 
         # === POST-SAVE: Run in BACKGROUND (non-blocking, response returns immediately) ===
         def _post_save():
@@ -431,15 +456,21 @@ def save_bilty(data: dict) -> dict:
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # Frontend gets city names back from server for PDF generation.
-        # next_gr_no is NOT included — frontend calls /next-available.
+        # next_gr_no included for new saves so frontend can auto-advance.
+        response_data = {
+            "bilty": saved_bilty,
+            "from_city": from_city,
+            "to_city": to_city,
+        }
+        if not bilty_id and new_current_number is not None:
+            response_data["new_current_number"] = new_current_number
+        if not bilty_id and next_gr_no is not None:
+            response_data["next_gr_no"] = next_gr_no
+
         return {
             "status": "success",
             "message": "Bilty saved successfully",
-            "data": {
-                "bilty": saved_bilty,
-                "from_city": from_city,
-                "to_city": to_city,
-            },
+            "data": response_data,
         }
 
     except Exception as e:
