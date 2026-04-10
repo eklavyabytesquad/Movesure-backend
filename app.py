@@ -88,8 +88,10 @@ async def lifespan(app):
     print("💡 Token auto-refresh enabled - Server will run continuously!")
     print("=" * 70)
     yield
-    # Shutdown
+    # Shutdown — clean up both thread pools
+    from services.thread_pool import shared_pool
     _executor.shutdown(wait=False)
+    shared_pool.shutdown(wait=False)
 
 
 app = FastAPI(title="Movesure Backend", lifespan=lifespan)
@@ -104,13 +106,39 @@ app.add_middleware(
 )
 
 # Thread pool for running blocking service calls without blocking the event loop
-_executor = ThreadPoolExecutor(max_workers=8)
+# Sized to handle concurrent requests — services reuse this pool instead of creating their own
+_executor = ThreadPoolExecutor(max_workers=20)
+
+# Semaphore limits concurrent blocking tasks — returns 503 immediately instead of hanging
+_semaphore = asyncio.Semaphore(16)
 
 
 async def _run(func, *args):
-    """Run a blocking function in the thread pool."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, func, *args)
+    """Run a blocking function in the thread pool with backpressure."""
+    if _semaphore.locked():
+        # All slots busy — fail fast instead of queueing and timing out
+        raise _OverloadError()
+    async with _semaphore:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, func, *args)
+
+
+class _OverloadError(Exception):
+    """Raised when server is at capacity."""
+    pass
+
+
+@app.middleware("http")
+async def handle_overload(request: Request, call_next):
+    """Catch overload and return 503 with Retry-After header."""
+    try:
+        return await call_next(request)
+    except _OverloadError:
+        return JSONResponse(
+            content={"status": "error", "message": "Server busy, please retry in a moment"},
+            status_code=503,
+            headers={"Retry-After": "2"},
+        )
 
 
 def _response(result: dict) -> JSONResponse:

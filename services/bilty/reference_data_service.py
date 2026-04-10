@@ -4,8 +4,9 @@ Single endpoint that returns ALL data the bilty page needs in one call.
 Replaces 8 separate Supabase calls from the frontend.
 Uses ThreadPoolExecutor for true parallel DB queries.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from services.supabase_client import get_supabase
+from services.thread_pool import shared_pool
 
 
 def get_reference_data(branch_id: str, user_id: str) -> dict:
@@ -74,21 +75,20 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
                 .execute()
             ).data or []
 
-        # Run ALL queries in parallel
+        # Run ALL queries in parallel using shared pool (no per-request thread creation)
         results = {}
-        with ThreadPoolExecutor(max_workers=7) as pool:
-            futures = {
-                pool.submit(fetch_branch): "branch",
-                pool.submit(fetch_cities): "cities",
-                pool.submit(fetch_transports): "transports",
-                pool.submit(fetch_consignors): "consignors",
-                pool.submit(fetch_consignees): "consignees",
-                pool.submit(fetch_rates): "rates",
-                pool.submit(fetch_bill_books): "bill_books",
-            }
-            for future in as_completed(futures):
-                key = futures[future]
-                results[key] = future.result()
+        futures = {
+            shared_pool.submit(fetch_branch): "branch",
+            shared_pool.submit(fetch_cities): "cities",
+            shared_pool.submit(fetch_transports): "transports",
+            shared_pool.submit(fetch_consignors): "consignors",
+            shared_pool.submit(fetch_consignees): "consignees",
+            shared_pool.submit(fetch_rates): "rates",
+            shared_pool.submit(fetch_bill_books): "bill_books",
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            results[key] = future.result()
 
         # Build city lookup maps for the frontend to cache
         cities = results["cities"]

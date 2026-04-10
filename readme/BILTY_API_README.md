@@ -241,7 +241,7 @@ For **editing** an existing bilty, add:
 > { "bilty_id": "uuid", "e_way_bill": null, ...other fields }
 > ```
 
-**Response:**
+**Response (new bilty save):**
 ```json
 {
   "status": "success",
@@ -266,7 +266,29 @@ For **editing** an existing bilty, add:
       "id": "uuid",
       "city_name": "KANPUR",
       "city_code": "KNP"
-    }
+    },
+    "new_current_number": 8045,
+    "next_gr_no": "A08045"
+  }
+}
+```
+
+> **`next_gr_no` field (new bilty saves only):**
+> - The formatted next available GR number (prefix + zero-padded number + postfix)
+> - Skips any actively reserved GR numbers in `gr_reservations`
+> - Only included for **new saves** — omitted for edits (`bilty_id` present)
+> - Frontend should store this in a sync ref (`serverNextGrNoRef`) for instant auto-advance
+> - If `null` or missing, fall back to `/api/bilty/gr/next-available`
+
+**Response (edit — no next_gr_no):**
+```json
+{
+  "status": "success",
+  "message": "Bilty saved successfully",
+  "data": {
+    "bilty": { "...updated bilty fields..." },
+    "from_city": { "id": "uuid", "city_name": "ALIGARH", "city_code": "ALG" },
+    "to_city": { "id": "uuid", "city_name": "KANPUR", "city_code": "KNP" }
   }
 }
 ```
@@ -341,6 +363,11 @@ async function handleSave() {
     const fromCity = result.data.from_city;  // { id, city_name, city_code }
     const toCity = result.data.to_city;      // { id, city_name, city_code }
 
+    // ✅ Store next GR number from server (instant, sync — no extra API call)
+    if (!editMode && result.data.next_gr_no) {
+      serverNextGrNoRef.current = result.data.next_gr_no;
+    }
+
     // Pass to PDF generation — guaranteed correct
     // No more || 'DEORIA' fallback needed!
     showPrintModal({
@@ -349,9 +376,9 @@ async function handleSave() {
       toCity,     // { city_name: "KANPUR", city_code: "KNP" }
     });
 
-    // Reset form for next bilty — frontend calls /next-available for next GR
+    // Reset form for next bilty — uses serverNextGrNoRef for instant GR advance
     if (!editMode) {
-      resetForm();
+      resetForm();  // reads serverNextGrNoRef.current for next GR number
     }
   } catch (err) {
     alert('Save failed: ' + err.message);
@@ -650,7 +677,7 @@ All endpoints return errors in the same format:
 | Page load data | 8 Supabase calls sequential ~2-3s | 1 API call, 7 parallel queries ~200-400ms |
 | Save bilty | Direct Supabase + re-fetch cities | 1 API call, parallel validation ~100-200ms |
 | PDF city data | Re-fetches from Supabase (fails on slow network) | Returned in save response (guaranteed) |
-| Next GR after save | Separate `/next-available` call (can fail under load) | Frontend calls `/next-available` after save (no auto-fill from response) |
+| Next GR after save | Separate `/next-available` call (can fail under load) | `next_gr_no` returned in save response (instant, skips reserved GRs) |
 | Rate save | Blocking (adds ~100ms to save) | Background (non-blocking, retries on connection error) |
 | Bill book update | Frontend-calculated (stale, can drift) | Server safety-checked: always `highest_used + 1` |
 | Consignor rates | Frontend fetches one by one | 1 API call with city lookup map |

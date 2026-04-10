@@ -4,8 +4,9 @@ Fetches consignor-specific rates from consignor_bilty_profile
 and default rates from the rates table.
 Uses parallel queries for speed.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from services.supabase_client import get_supabase
+from services.thread_pool import shared_pool
 
 
 def get_consignor_rates(consignor_id: str) -> dict:
@@ -98,14 +99,13 @@ def get_all_rates(consignor_id: str, branch_id: str) -> dict:
     """
     try:
         results = {}
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {
-                pool.submit(get_consignor_rates, consignor_id): "consignor_rates",
-                pool.submit(get_default_rates, branch_id): "default_rates",
-            }
-            for future in as_completed(futures):
-                key = futures[future]
-                results[key] = future.result()
+        futures = {
+            shared_pool.submit(get_consignor_rates, consignor_id): "consignor_rates",
+            shared_pool.submit(get_default_rates, branch_id): "default_rates",
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            results[key] = future.result()
 
         # Check for errors
         for key, res in results.items():

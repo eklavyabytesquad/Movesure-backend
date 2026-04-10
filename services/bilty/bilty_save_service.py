@@ -5,13 +5,13 @@ Resolves city names from IDs on the server so the frontend
 never has to rely on network during PDF generation.
 Optimized with parallel DB calls for maximum speed.
 """
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import sleep
 from services.supabase_client import get_supabase
+from services.thread_pool import shared_pool
 
-# Shared thread pool for background tasks (rate save, bill book update)
-_bg_pool = ThreadPoolExecutor(max_workers=4)
+# Shared thread pool for background tasks (rate save, party auto-create)
+# Uses the centralized pool from services.thread_pool
 
 
 def _extract_gr_number(gr_no: str, prefix: str, postfix: str, digits: int) -> int | None:
@@ -191,44 +191,43 @@ def save_bilty(data: dict) -> dict:
         consignor_name_raw = data.get("consignor_name")
         invoice_no_raw = data.get("invoice_no")
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {}
-            if from_city_id:
-                futures[pool.submit(_resolve_city, sb, from_city_id)] = "from_city"
-            if to_city_id:
-                futures[pool.submit(_resolve_city, sb, to_city_id)] = "to_city"
-            if not bilty_id:
-                def check_dup():
-                    r = (
-                        sb.table("bilty")
-                        .select("id")
-                        .eq("gr_no", gr_no)
-                        .eq("branch_id", branch_id)
-                        .eq("is_active", True)
-                        .limit(1)
-                        .execute()
-                    )
-                    return bool(r.data)
-                futures[pool.submit(check_dup)] = "dup_check"
+        futures = {}
+        if from_city_id:
+            futures[shared_pool.submit(_resolve_city, sb, from_city_id)] = "from_city"
+        if to_city_id:
+            futures[shared_pool.submit(_resolve_city, sb, to_city_id)] = "to_city"
+        if not bilty_id:
+            def check_dup():
+                r = (
+                    sb.table("bilty")
+                    .select("id")
+                    .eq("gr_no", gr_no)
+                    .eq("branch_id", branch_id)
+                    .eq("is_active", True)
+                    .limit(1)
+                    .execute()
+                )
+                return bool(r.data)
+            futures[shared_pool.submit(check_dup)] = "dup_check"
 
-            # Invoice dedup: same consignor + same invoice_no should not exist
-            if not bilty_id and consignor_name_raw and invoice_no_raw:
-                def check_invoice_dup():
-                    r = (
-                        sb.table("bilty")
-                        .select("gr_no")
-                        .ilike("consignor_name", consignor_name_raw.strip())
-                        .eq("invoice_no", invoice_no_raw.strip())
-                        .eq("is_active", True)
-                        .limit(1)
-                        .execute()
-                    )
-                    if r.data:
-                        return r.data[0]["gr_no"]
-                    return None
-                futures[pool.submit(check_invoice_dup)] = "invoice_dup"
+        # Invoice dedup: same consignor + same invoice_no should not exist
+        if not bilty_id and consignor_name_raw and invoice_no_raw:
+            def check_invoice_dup():
+                r = (
+                    sb.table("bilty")
+                    .select("gr_no")
+                    .ilike("consignor_name", consignor_name_raw.strip())
+                    .eq("invoice_no", invoice_no_raw.strip())
+                    .eq("is_active", True)
+                    .limit(1)
+                    .execute()
+                )
+                if r.data:
+                    return r.data[0]["gr_no"]
+                return None
+            futures[shared_pool.submit(check_invoice_dup)] = "invoice_dup"
 
-            for future in futures:
+        for future in futures:
                 key = futures[future]
                 if key == "from_city":
                     from_city = future.result()
@@ -452,7 +451,7 @@ def save_bilty(data: dict) -> dict:
                     print(f"Background post-save error: {bg_err}")
                     return  # non-retriable — exit
 
-        _bg_pool.submit(_post_save)
+        shared_pool.submit(_post_save)
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # Frontend gets city names back from server for PDF generation.

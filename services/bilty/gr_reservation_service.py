@@ -4,8 +4,9 @@ Atomic GR number reservation, release, completion, and sequence management.
 All operations use row-level checks to prevent race conditions.
 """
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from services.supabase_client import get_supabase
+from services.thread_pool import shared_pool
 
 RESERVATION_TTL_MINUTES = 30
 
@@ -116,14 +117,13 @@ def get_next_available_grs(bill_book_id: str, branch_id: str, count: int = 5) ->
             return {"status": "error", "message": "Bill book not found", "status_code": 404}
 
         # Parallel fetch: reservations + used bilties
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_res = pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
-            f_used = pool.submit(
-                _get_used_gr_numbers, sb, bill_book_id,
-                bb["prefix"], bb["digits"], bb["from_number"], bb["to_number"],
-            )
-            reservations = f_res.result()
-            used_grs = f_used.result()
+        f_res = shared_pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
+        f_used = shared_pool.submit(
+            _get_used_gr_numbers, sb, bill_book_id,
+            bb["prefix"], bb["digits"], bb["from_number"], bb["to_number"],
+        )
+        reservations = f_res.result()
+        used_grs = f_used.result()
 
         reserved_grs = {r["gr_no"] for r in reservations}
 
@@ -165,14 +165,13 @@ def reserve_gr(bill_book_id: str, branch_id: str, user_id: str, user_name: str, 
         to_num = bb["to_number"]
 
         # Get existing reservations + used bilties
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_res = pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
-            f_used = pool.submit(
-                _get_used_gr_numbers, sb, bill_book_id,
-                prefix, digits, bb["from_number"], to_num,
-            )
-            reservations = f_res.result()
-            used_grs = f_used.result()
+        f_res = shared_pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
+        f_used = shared_pool.submit(
+            _get_used_gr_numbers, sb, bill_book_id,
+            prefix, digits, bb["from_number"], to_num,
+        )
+        reservations = f_res.result()
+        used_grs = f_used.result()
 
         reserved_grs = {r["gr_no"] for r in reservations}
 
@@ -402,13 +401,12 @@ def get_branch_gr_status(branch_id: str, bill_book_id: str = None) -> dict:
                 return None
             return _get_bill_book(sb, bill_book_id)
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            f1 = pool.submit(fetch_reservations)
-            f2 = pool.submit(fetch_recent_bilties)
-            f3 = pool.submit(fetch_bill_book)
-            reservations = f1.result()
-            recent = f2.result()
-            bb = f3.result()
+        f1 = shared_pool.submit(fetch_reservations)
+        f2 = shared_pool.submit(fetch_recent_bilties)
+        f3 = shared_pool.submit(fetch_bill_book)
+        reservations = f1.result()
+        recent = f2.result()
+        bb = f3.result()
 
         return {
             "status": "success",
@@ -573,11 +571,10 @@ def validate_bill_book(bill_book_id: str) -> dict:
         branch_id = bb.get("branch_id", "")
 
         # Parallel: get used GRs + active reservations
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_used = pool.submit(_get_used_gr_numbers, sb, bill_book_id, prefix, digits, from_num, to_num)
-            f_res = pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
-            used_grs = f_used.result()
-            reservations = f_res.result()
+        f_used = shared_pool.submit(_get_used_gr_numbers, sb, bill_book_id, prefix, digits, from_num, to_num)
+        f_res = shared_pool.submit(_get_active_reservations, sb, branch_id, bill_book_id)
+        used_grs = f_used.result()
+        reservations = f_res.result()
 
         reserved_grs = {r["gr_no"] for r in reservations}
 
