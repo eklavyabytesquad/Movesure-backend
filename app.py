@@ -1,6 +1,23 @@
 """
 FastAPI Backend for E-Way Bill Management & Bilty Operations
 """
+import logging
+import sys
+import time
+
+# ── Logging setup (stdout so Coolify / Docker captures it) ──────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+# Silence noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # we log ourselves
+
+log = logging.getLogger("movesure")
+
 from fastapi import FastAPI, Request, Query, Path
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,42 +68,43 @@ from services.challan.transit_service import (
 @asynccontextmanager
 async def lifespan(app):
     # Startup
-    print("=" * 70)
-    print("🚀 STARTING E-WAY BILL API SERVER (FastAPI)")
-    print("=" * 70)
+    log.info("=" * 70)
+    log.info("STARTING E-WAY BILL API SERVER (FastAPI)")
+    log.info("=" * 70)
     token = load_jwt_token()
     if token:
-        print("✅ JWT Token loaded successfully")
+        log.info("JWT Token loaded successfully")
     else:
-        print("⚠️ Getting new JWT token...")
+        log.warning("Getting new JWT token...")
         token = get_jwt_token()
         if token:
-            print("✅ JWT Token obtained successfully")
+            log.info("JWT Token obtained successfully")
         else:
-            print("❌ Failed to get JWT token. Server may not work properly.")
-    print("=" * 70)
-    print("📡 Server running at: http://localhost:5000")
-    print("📋 Available Endpoints:")
-    print("   - GET  /api/health")
-    print("   - GET  /api/ewaybill?eway_bill_number=XXX&gstin=YYY")
-    print("   - POST /api/consolidated-ewaybill")
-    print("   - POST /api/transporter-update")
-    print("   - POST /api/transporter-update-with-pdf (2 API calls)")
-    print("   - POST /api/extend-ewaybill")
-    print("   - GET  /api/distance?fromPincode=XXX&toPincode=YYY")
-    print("   - GET  /api/gstin-details?userGstin=XXX&gstin=YYY")
-    print("   - GET  /api/transporter-details?userGstin=XXX&gstin=YYY")
-    print("   - POST /api/generate-ewaybill")
-    print("   - POST /api/refresh-token")
-    print("   - GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY")
-    print("   - POST /api/bilty/save")
-    print("   - GET  /api/bilty/{bilty_id}")
-    print("   - GET  /api/bilty/rates/consignor/{consignor_id}")
-    print("   - GET  /api/bilty/rates/default?branch_id=XXX")
-    print("   - GET  /api/bilty/rates/all?consignor_id=XXX&branch_id=YYY")
-    print("=" * 70)
-    print("💡 Token auto-refresh enabled - Server will run continuously!")
-    print("=" * 70)
+            log.error("Failed to get JWT token. Server may not work properly.")
+    log.info("Server running at: http://localhost:5000")
+    log.info("Available Endpoints:")
+    for ep in [
+        "GET  /api/health",
+        "GET  /api/ewaybill?eway_bill_number=XXX&gstin=YYY",
+        "POST /api/consolidated-ewaybill",
+        "POST /api/transporter-update",
+        "POST /api/transporter-update-with-pdf (2 API calls)",
+        "POST /api/extend-ewaybill",
+        "GET  /api/distance?fromPincode=XXX&toPincode=YYY",
+        "GET  /api/gstin-details?userGstin=XXX&gstin=YYY",
+        "GET  /api/transporter-details?userGstin=XXX&gstin=YYY",
+        "POST /api/generate-ewaybill",
+        "POST /api/refresh-token",
+        "GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY",
+        "POST /api/bilty/save",
+        "GET  /api/bilty/{bilty_id}",
+        "GET  /api/bilty/rates/consignor/{consignor_id}",
+        "GET  /api/bilty/rates/default?branch_id=XXX",
+        "GET  /api/bilty/rates/all?consignor_id=XXX&branch_id=YYY",
+    ]:
+        log.info("  - %s", ep)
+    log.info("Token auto-refresh enabled - Server will run continuously!")
+    log.info("=" * 70)
     yield
     # Shutdown — clean up both thread pools
     from services.thread_pool import shared_pool
@@ -129,16 +147,25 @@ class _OverloadError(Exception):
 
 
 @app.middleware("http")
-async def handle_overload(request: Request, call_next):
-    """Catch overload and return 503 with Retry-After header."""
+async def access_log(request: Request, call_next):
+    """Log every request with method, path, status code, and duration."""
+    start = time.perf_counter()
+    response = None
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        return response
     except _OverloadError:
+        log.warning("SERVER OVERLOADED - %s %s", request.method, request.url.path)
         return JSONResponse(
             content={"status": "error", "message": "Server busy, please retry in a moment"},
             status_code=503,
             headers={"Retry-After": "2"},
         )
+    finally:
+        duration_ms = (time.perf_counter() - start) * 1000
+        status = response.status_code if response else 500
+        log_fn = log.warning if status >= 400 else log.info
+        log_fn("%s %s -> %d (%.1fms)", request.method, request.url.path, status, duration_ms)
 
 
 def _response(result: dict) -> JSONResponse:
@@ -159,20 +186,20 @@ async def ensure_valid_token(request: Request, call_next):
     if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty") or path.startswith("/api/challan"):
         return await call_next(request)
 
-    print(f"🔍 Validating token for request: {request.method} {path}")
+    log.info("Token check: %s %s", request.method, path)
     token = load_jwt_token()
     if not token:
-        print("⚠️ Token validation failed, attempting to refresh...")
+        log.warning("Token missing, attempting refresh...")
         token = get_jwt_token()
         if not token:
-            print("❌ Failed to obtain valid token")
+            log.error("Failed to obtain valid JWT token for %s %s", request.method, path)
             return JSONResponse(
                 content={"status": "error", "message": "Authentication failed. Unable to obtain valid JWT token."},
                 status_code=503,
             )
-        print("✅ Successfully obtained new token")
+        log.info("JWT token refreshed successfully")
     else:
-        print("✅ Token validated successfully")
+        log.debug("JWT token valid")
 
     return await call_next(request)
 
@@ -193,7 +220,7 @@ async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(N
         result = await _run(get_ewaybill_details, eway_bill_number, gstin)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in get_ewaybill: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -206,7 +233,7 @@ async def consolidated_ewaybill_endpoint(request: Request):
         result = await _run(create_consolidated_ewaybill, data)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in consolidated_ewaybill: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -249,7 +276,7 @@ async def transporter_update(request: Request):
         )
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in transporter_update: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -278,7 +305,7 @@ async def transporter_update_with_pdf(request: Request):
         )
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in transporter_update_with_pdf: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -291,7 +318,7 @@ async def extend_ewaybill(request: Request):
         result = await _run(extend_ewaybill_validity, data)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in extend_ewaybill: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -306,7 +333,7 @@ async def distance(fromPincode: str = Query(None), toPincode: str = Query(None))
         result = await _run(get_distance, fromPincode, toPincode)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in distance: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -321,7 +348,7 @@ async def gstin_details(userGstin: str = Query(None), gstin: str = Query(None)):
         result = await _run(get_gstin_details, userGstin, gstin)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in gstin_details: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -336,7 +363,7 @@ async def transporter_details(userGstin: str = Query(None), gstin: str = Query(N
         result = await _run(get_transporter_details, userGstin, gstin)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in transporter_details: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -349,7 +376,7 @@ async def generate_ewaybill_endpoint(request: Request):
         result = await _run(generate_ewaybill, data)
         return _response(result)
     except Exception as e:
-        print(f"❌ Exception occurred: {str(e)}")
+        log.exception("Error in generate_ewaybill: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
