@@ -39,7 +39,7 @@ from services.ewaybill.transporter_details_service import get_transporter_detail
 from services.ewaybill.generate_ewaybill_service import generate_ewaybill
 from services.bilty.reference_data_service import get_reference_data
 from services.bilty.bilty_save_service import save_bilty, get_bilty_with_cities
-from services.bilty.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates
+from services.bilty.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates, calculate_dd_charge
 from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
     complete_reservation, extend_reservation, get_branch_gr_status,
@@ -50,6 +50,7 @@ from services.bilty.master_data_service import (
     list_records, get_record, create_record, update_record, delete_record,
     bulk_update, bulk_create, bulk_delete,
 )
+from services.bilty.transport_pending_service import get_all_transport_pending_bilties
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -441,6 +442,32 @@ async def all_rates(consignor_id: str = Query(...), branch_id: str = Query(...))
     """Fetch both consignor-specific and default rates in parallel."""
     try:
         result = await _run(get_all_rates, consignor_id, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/calculate/dd")
+async def bilty_calculate_dd(
+    consignor_id: str = Query(..., description="Consignor UUID"),
+    destination_city_id: str = Query(..., description="Destination city UUID (destination_station_id)"),
+    weight: float = Query(..., description="Gross weight in kg"),
+    no_of_pkg: int = Query(..., description="Number of packages (nag)"),
+):
+    """
+    Calculate door-delivery charge from the consignor bilty profile.
+
+    Logic:
+      1. Look up active consignor_bilty_profile row for consignor + destination city.
+      2. If dd_charge_per_kg > 0  →  dd = dd_charge_per_kg × weight
+         elif dd_charge_per_nag > 0 →  dd = dd_charge_per_nag × no_of_pkg
+         else                        →  dd = 0
+      3. Apply minimum of 150:  dd_charge = max(dd, 150)
+
+    Returns dd_charge, raw_calculated, basis, per-unit rates, and profile_id.
+    """
+    try:
+        result = await _run(calculate_dd_charge, consignor_id, destination_city_id, weight, no_of_pkg)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
@@ -922,6 +949,25 @@ async def challan_hub_received(request: Request, challan_id: str = Path(...)):
 async def challan_delete(challan_id: str = Path(...)):
     try:
         result = await _run(delete_challan, challan_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# TRANSPORT PENDING BILTIES
+# ============================================================
+
+
+@app.get("/api/bilty/transport-pending")
+async def transport_pending_bilties():
+    """
+    Returns all bilties (across ALL transports) that are missing pohonch_no OR
+    bilty_number in bilty_wise_kaat.
+    Grouped: transport → challan → serial-ordered bilties.
+    """
+    try:
+        result = await _run(get_all_transport_pending_bilties)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

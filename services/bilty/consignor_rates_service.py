@@ -92,6 +92,89 @@ def get_default_rates(branch_id: str) -> dict:
         }
 
 
+DD_MINIMUM = 150.0
+
+
+def calculate_dd_charge(
+    consignor_id: str,
+    destination_city_id: str,
+    weight: float,
+    no_of_pkg: int,
+) -> dict:
+    """
+    Calculate the door-delivery charge for a bilty.
+
+    Looks up the consignor's active profile row matching consignor_id +
+    destination_station_id.  Applies:
+      • per-kg  rate  when dd_charge_per_kg  > 0
+      • per-nag rate  when dd_charge_per_nag > 0 (fallback)
+      • hard minimum of 150 regardless of the calculated value
+
+    Returns dd_charge, the basis used, and the raw per-unit rates so the
+    frontend can display the breakdown.
+    """
+    try:
+        sb = get_supabase()
+
+        rows = (
+            sb.table("consignor_bilty_profile")
+            .select("id, dd_charge_per_kg, dd_charge_per_nag")
+            .eq("consignor_id", consignor_id)
+            .eq("destination_station_id", destination_city_id)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        ).data
+
+        if not rows:
+            return {
+                "status": "success",
+                "data": {
+                    "dd_charge": DD_MINIMUM,
+                    "raw_calculated": 0.0,
+                    "basis": "minimum_no_profile",
+                    "per_kg_rate": 0.0,
+                    "per_nag_rate": 0.0,
+                    "profile_id": None,
+                },
+            }
+
+        profile = rows[0]
+        per_kg = float(profile.get("dd_charge_per_kg") or 0)
+        per_nag = float(profile.get("dd_charge_per_nag") or 0)
+
+        if per_kg > 0:
+            raw = per_kg * float(weight)
+            basis = "per_kg"
+        elif per_nag > 0:
+            raw = per_nag * int(no_of_pkg)
+            basis = "per_nag"
+        else:
+            raw = 0.0
+            basis = "minimum"
+
+        dd_charge = max(raw, DD_MINIMUM)
+
+        return {
+            "status": "success",
+            "data": {
+                "dd_charge": round(dd_charge, 2),
+                "raw_calculated": round(raw, 2),
+                "basis": basis,
+                "per_kg_rate": per_kg,
+                "per_nag_rate": per_nag,
+                "profile_id": profile["id"],
+            },
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to calculate DD charge: {str(e)}",
+            "status_code": 500,
+        }
+
+
 def get_all_rates(consignor_id: str, branch_id: str) -> dict:
     """
     Fetch BOTH consignor-specific rates AND default branch rates in parallel.
