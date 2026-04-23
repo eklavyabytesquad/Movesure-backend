@@ -1,7 +1,7 @@
 """
 Service: Get grouped transport pending bilties (by GSTIN)
 POST: dispatch_date_from, dispatch_date_to
-Returns bilties missing pohonch_no OR bilty_number in bilty_wise_kaat,
+Returns bilties missing BOTH pohonch_no AND bilty_number in bilty_wise_kaat,
 grouped: GSTIN → transport_names[] → challan → serial-order.
 """
 from collections import defaultdict
@@ -60,8 +60,8 @@ def get_grouped_transport_pending_bilties(dispatch_date_from: str, dispatch_date
             "id,gr_no,challan_no,pohonch_no,bilty_number,transport_id,destination_city_id,kaat,pf,dd_chrg"
         ).in_("challan_no", challan_nos).not_.is_("transport_id", "null").range(lo, hi).execute()
     )
-    # 5. Only rows missing pohonch_no OR bilty_number
-    pending = [r for r in all_kaat if not r.get("pohonch_no") or not r.get("bilty_number")]
+    # 5. Only rows missing BOTH pohonch_no AND bilty_number
+    pending = [r for r in all_kaat if not r.get("pohonch_no") and not r.get("bilty_number")]
     if not pending:
         return {"status": "success", "groups": [], "total_bilties": 0, "total_groups": 0}
 

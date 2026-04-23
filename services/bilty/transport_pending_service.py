@@ -1,6 +1,6 @@
 """
 Service: Get all-transport pending bilties
-Returns bilties missing pohonch_no OR bilty_number in bilty_wise_kaat,
+Returns bilties missing BOTH pohonch_no AND bilty_number in bilty_wise_kaat,
 grouped: transport → challan → serial-order.
 """
 from collections import defaultdict
@@ -41,10 +41,10 @@ def get_all_transport_pending_bilties():
         ).not_.is_("transport_id", "null").range(lo, hi).execute()
     )
 
-    # 3. Keep only rows missing pohonch_no OR bilty_number
+    # 3. Keep only rows missing BOTH pohonch_no AND bilty_number
     pending = [
         r for r in all_kaat
-        if not r.get("pohonch_no") or not r.get("bilty_number")
+        if not r.get("pohonch_no") and not r.get("bilty_number")
     ]
 
     if not pending:
