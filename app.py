@@ -51,6 +51,7 @@ from services.bilty.master_data_service import (
     bulk_update, bulk_create, bulk_delete,
 )
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
+from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -949,6 +950,30 @@ async def challan_hub_received(request: Request, challan_id: str = Path(...)):
 async def challan_delete(challan_id: str = Path(...)):
     try:
         result = await _run(delete_challan, challan_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# GROUPED TRANSPORT PENDING BILTIES (by GSTIN, date range)
+# ============================================================
+from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
+
+@app.post("/api/bilty/transport-pending-grouped")
+async def transport_pending_grouped(request: Request):
+    """
+    Returns all bilties (across ALL transports, grouped by GSTIN) that are missing pohonch_no OR
+    bilty_number in bilty_wise_kaat, for challans dispatched between given dates.
+    Body: { "dispatch_date_from": "YYYY-MM-DD", "dispatch_date_to": "YYYY-MM-DD" }
+    """
+    try:
+        data = await request.json()
+        dispatch_date_from = data.get("dispatch_date_from")
+        dispatch_date_to = data.get("dispatch_date_to")
+        if not dispatch_date_from or not dispatch_date_to:
+            return JSONResponse(content={"status": "error", "message": "dispatch_date_from and dispatch_date_to required"}, status_code=400)
+        result = await _run(get_grouped_transport_pending_bilties, dispatch_date_from, dispatch_date_to)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
