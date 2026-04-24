@@ -54,12 +54,15 @@ def get_grouped_transport_pending_bilties(dispatch_date_from: str, dispatch_date
         gst = t.get("gst_number") or "NO_GSTIN"
         gstin_map[gst].append(t)
 
-    # 4. All kaat rows for these challans
-    all_kaat = _fetch_all(
-        lambda lo, hi: sb.table("bilty_wise_kaat").select(
-            "id,gr_no,challan_no,pohonch_no,bilty_number,transport_id,destination_city_id,kaat,pf,dd_chrg"
-        ).in_("challan_no", challan_nos).not_.is_("transport_id", "null").range(lo, hi).execute()
-    )
+    # 4. All kaat rows for these challans (batched in chunks of 200 to avoid URL length limits)
+    all_kaat = []
+    for _ci in range(0, len(challan_nos), 200):
+        _chunk = challan_nos[_ci:_ci + 200]
+        all_kaat.extend(_fetch_all(
+            lambda lo, hi, c=_chunk: sb.table("bilty_wise_kaat").select(
+                "id,gr_no,challan_no,pohonch_no,bilty_number,transport_id,destination_city_id,kaat,pf,dd_chrg"
+            ).in_("challan_no", c).not_.is_("transport_id", "null").range(lo, hi).execute()
+        ))
     # 5. Only rows missing BOTH pohonch_no AND bilty_number
     pending = [r for r in all_kaat if not r.get("pohonch_no") and not r.get("bilty_number")]
     if not pending:

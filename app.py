@@ -134,13 +134,16 @@ _semaphore = asyncio.Semaphore(16)
 
 
 async def _run(func, *args):
-    """Run a blocking function in the thread pool with backpressure."""
-    if _semaphore.locked():
-        # All slots busy — fail fast instead of queueing and timing out
+    """Run a blocking function in the thread pool.
+    Queues if all slots busy; raises _OverloadError if wait exceeds 30 s."""
+    async def _inner():
+        async with _semaphore:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(_executor, func, *args)
+    try:
+        return await asyncio.wait_for(_inner(), timeout=30)
+    except asyncio.TimeoutError:
         raise _OverloadError()
-    async with _semaphore:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(_executor, func, *args)
 
 
 class _OverloadError(Exception):
