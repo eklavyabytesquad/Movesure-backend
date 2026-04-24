@@ -73,7 +73,7 @@ def get_all_transport_pending_bilties():
     for i in range(0, len(gr_nos), 500):
         chunk = gr_nos[i:i + 500]
         res = sb.table("station_bilty_summary").select(
-            "gr_no,station,no_of_packets,weight,amount,consignor_name,consignee_name"
+            "gr_no,station,no_of_packets,weight,amount,consignor,consignee"
         ).in_("gr_no", chunk).execute()
         for row in (res.data or []):
             sbs_map[row["gr_no"]] = row
@@ -100,8 +100,8 @@ def get_all_transport_pending_bilties():
             "kaat":           float(row.get("kaat") or 0),
             "pf":             float(row.get("pf") or 0),
             "dd_chrg":        float(row.get("dd_chrg") or 0),
-            "consignor_name": bilty.get("consignor_name") or sbs.get("consignor_name") or "",
-            "consignee_name": bilty.get("consignee_name") or sbs.get("consignee_name") or "",
+            "consignor_name": bilty.get("consignor_name") or sbs.get("consignor") or "",
+            "consignee_name": bilty.get("consignee_name") or sbs.get("consignee") or "",
             "payment_mode":   bilty.get("payment_mode") or "",
             "delivery_type":  bilty.get("delivery_type") or "",
             "bilty_date":     str(bilty.get("bilty_date") or ""),
