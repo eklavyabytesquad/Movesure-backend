@@ -86,7 +86,7 @@ def get_grouped_transport_pending_bilties(dispatch_date_from: str, dispatch_date
     for i in range(0, len(gr_nos), 500):
         chunk = gr_nos[i:i + 500]
         res = sb.table("station_bilty_summary").select(
-            "gr_no,station,no_of_packets,weight,amount,consignor,consignee"
+            "gr_no,station,no_of_packets,weight,amount,consignor,consignee,payment_status,delivery_type,created_at"
         ).in_("gr_no", chunk).execute()
         for row in (res.data or []):
             sbs_map[row["gr_no"]] = row
@@ -117,9 +117,9 @@ def get_grouped_transport_pending_bilties(dispatch_date_from: str, dispatch_date
             "dd_chrg":        float(row.get("dd_chrg") or 0),
             "consignor_name": bilty.get("consignor_name") or sbs.get("consignor") or "",
             "consignee_name": bilty.get("consignee_name") or sbs.get("consignee") or "",
-            "payment_mode":   bilty.get("payment_mode") or "",
-            "delivery_type":  bilty.get("delivery_type") or "",
-            "bilty_date":     str(bilty.get("bilty_date") or ""),
+            "payment_mode":   bilty.get("payment_mode") or sbs.get("payment_status") or "",
+            "delivery_type":  bilty.get("delivery_type") or sbs.get("delivery_type") or "",
+            "bilty_date":     str(bilty.get("bilty_date") or (sbs.get("created_at") or "")[:10]),
             "transport_id":   tid,
             "transport_name": t.get("transport_name", ""),
             "city_name":      t.get("city_name", ""),
