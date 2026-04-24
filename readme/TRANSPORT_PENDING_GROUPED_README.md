@@ -30,9 +30,9 @@ A bilty row in `bilty_wise_kaat` is considered **pending** if:
 |-----------|---------|
 | `pohonch_no` is `null` | Pohonch number not yet assigned |
 | `bilty_number` is `null` | Bilty number not yet assigned |
-| **Either** of the above | Row is included |
+| **Both** of the above | Row is included |
 
-Rows where **both** `pohonch_no` and `bilty_number` are filled are **excluded**.
+Rows where **either** `pohonch_no` or `bilty_number` is filled are **excluded**.
 
 ---
 
