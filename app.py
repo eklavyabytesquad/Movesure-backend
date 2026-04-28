@@ -65,6 +65,12 @@ from services.challan.transit_service import (
     remove_from_transit, bulk_remove_from_transit,
     bulk_update_delivery_status, get_challan_stats,
 )
+from services.pohonch.pohonch_service import (
+    list_pohonch, get_pohonch, get_pohonch_by_number,
+    update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
+)
+from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items
+from services.pohonch.pohonch_edit_service import edit_pohonch
 
 
 @asynccontextmanager
@@ -1013,6 +1019,185 @@ async def bilty_get(bilty_id: str = Path(...)):
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# POHONCH ENDPOINTS
+# ============================================================
+
+
+@app.post("/api/pohonch/create")
+async def pohonch_create(request: Request):
+    """
+    Create a pohonch from an explicit list of GR items.
+
+    Body:
+    {
+      "transport_name":  "NEW INDIA EXPRESS TRANSPORT CO.",
+      "transport_gstin": "09AACPY1378F3ZC",          // optional
+      "challan_nos":     ["B00016"],
+      "gr_items": [
+        {"gr_no": "22789", "pohonch_bilty": "1031"},
+        {"gr_no": "22790", "pohonch_bilty": "1031"},
+        {"gr_no": "22791", "pohonch_bilty": "1031"},
+        {"gr_no": "22803", "pohonch_bilty": "1031"}
+      ],
+      "pohonch_prefix":  "NIE",                       // optional – auto-derived if omitted
+      "created_by":      "uuid"                        // optional
+    }
+    """
+    try:
+        data = await request.json()
+        transport_name  = data.get("transport_name", "").strip()
+        transport_gstin = data.get("transport_gstin", "")
+        challan_nos     = data.get("challan_nos", [])
+        gr_items        = data.get("gr_items", [])
+        pohonch_prefix  = data.get("pohonch_prefix")
+        created_by      = data.get("created_by")
+
+        if not transport_name:
+            return JSONResponse(content={"status": "error", "message": "transport_name is required"}, status_code=400)
+        if not challan_nos:
+            return JSONResponse(content={"status": "error", "message": "challan_nos array is required"}, status_code=400)
+        if not gr_items:
+            return JSONResponse(content={"status": "error", "message": "gr_items array is required"}, status_code=400)
+
+        result = await _run(
+            create_pohonch_from_gr_items,
+            transport_name, transport_gstin, challan_nos,
+            gr_items, pohonch_prefix, created_by,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in pohonch_create: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/pohonch/list")
+async def pohonch_list(
+    transport_name: str = Query(None),
+    transport_gstin: str = Query(None),
+    is_signed: bool = Query(None),
+    is_active: bool = Query(True),
+    page: int = Query(1),
+    page_size: int = Query(40),
+    search: str = Query(None),
+):
+    """
+    List pohonch records with optional filters.
+    Filters: transport_name (partial), transport_gstin (exact), is_signed, is_active, search.
+    """
+    try:
+        result = await _run(
+            list_pohonch,
+            transport_name, transport_gstin, is_signed, is_active,
+            page, page_size, search,
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/pohonch/number/{pohonch_number}")
+async def pohonch_get_by_number(pohonch_number: str = Path(...)):
+    """Get a single pohonch by its pohonch_number (e.g. JMST0001)."""
+    try:
+        result = await _run(get_pohonch_by_number, pohonch_number)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/pohonch/{pohonch_id}")
+async def pohonch_update(request: Request, pohonch_id: str = Path(...)):
+    """Update pohonch fields. Pass user_id in body for audit trail."""
+    try:
+        data = await request.json()
+        user_id = data.pop("user_id", None)
+        result = await _run(update_pohonch, pohonch_id, data, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/pohonch/{pohonch_id}/sign")
+async def pohonch_sign(request: Request, pohonch_id: str = Path(...)):
+    """Mark a pohonch as signed. Body: { user_id: '...' }"""
+    try:
+        data = await request.json()
+        if not data.get("user_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing user_id"}, status_code=400)
+        result = await _run(sign_pohonch, pohonch_id, data["user_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/pohonch/{pohonch_id}/unsign")
+async def pohonch_unsign(request: Request, pohonch_id: str = Path(...)):
+    """Revert a pohonch signature. Body: { user_id: '...' }"""
+    try:
+        data = await request.json()
+        if not data.get("user_id"):
+            return JSONResponse(content={"status": "error", "message": "Missing user_id"}, status_code=400)
+        result = await _run(unsign_pohonch, pohonch_id, data["user_id"])
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/pohonch/{pohonch_id}")
+async def pohonch_delete(pohonch_id: str = Path(...), user_id: str = Query(None)):
+    """Hard-delete a pohonch record permanently (frees up the pohonch_number)."""
+    try:
+        result = await _run(delete_pohonch, pohonch_id, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.patch("/api/pohonch/{pohonch_id}/edit")
+async def pohonch_edit(request: Request, pohonch_id: str = Path(...)):
+    """
+    Edit an existing pohonch — add/remove bilties and/or rename pohonch_number.
+
+    Body (all fields optional — supply only what you want to change):
+    {
+      "add_gr_items": [{"gr_no": "22900", "challan_no": "B00020", "pohonch_bilty": "1045"}],
+      "remove_gr_nos": ["22789"],
+      "new_pohonch_number": "NIE0001",
+      "challan_nos": ["B00016", "B00020"],
+      "user_id": "uuid",
+      "force": false
+    }
+    Note: Signed pohonch cannot be edited unless force=true is sent.
+    """
+    try:
+        data = await request.json()
+        result = await _run(
+            edit_pohonch,
+            pohonch_id,
+            data.get("add_gr_items"),
+            data.get("remove_gr_nos"),
+            data.get("new_pohonch_number"),
+            data.get("challan_nos"),
+            data.get("user_id"),
+            bool(data.get("force", False)),
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in pohonch_edit: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/pohonch/{pohonch_id}")
+async def pohonch_get(pohonch_id: str = Path(...)):
+    """Get a single pohonch by UUID."""
+    try:
+        result = await _run(get_pohonch, pohonch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 # ============================================================
