@@ -132,12 +132,78 @@ def get_transport_bilty_report(
             "no_pohonch": {},
         }
 
-    gr_nos = [b["gr_no"] for b in unified]
-    kaat_map = _fetch_kaat(sb, gr_nos)
-
     transport_filter = transport_gstin or transport_name
     is_gstin = bool(transport_gstin)
-    gr_to_pohonch_number, gr_to_crossing_challans = _fetch_pohonch_maps(sb, transport_filter, is_gstin)
+    gr_to_pohonch_number, gr_to_crossing_challans, all_pohonch_gr_nos = _fetch_pohonch_maps(sb, transport_filter, is_gstin)
+
+    # Fetch crossing-challan bilties from other transports referenced in this transport's pohonch
+    missing_gr_nos = all_pohonch_gr_nos - seen
+    if missing_gr_nos:
+        missing_list = list(missing_gr_nos)
+        for b in _fetch_bilty_by_gr_nos(sb, missing_list):
+            gr = b["gr_no"]
+            if gr in seen:
+                continue
+            seen.add(gr)
+            unified.append({
+                "source": "regular",
+                "gr_no": gr,
+                "bilty_date": _safe(b.get("bilty_date")),
+                "transport_name": _safe(b.get("transport_name")),
+                "transport_gst": _safe(b.get("transport_gst")),
+                "consignor_name": _safe(b.get("consignor_name")),
+                "consignee_name": _safe(b.get("consignee_name")),
+                "city_id_from": b.get("from_city_id"),
+                "city_id_to": b.get("to_city_id"),
+                "payment_mode": _safe(b.get("payment_mode")),
+                "no_of_pkg": b.get("no_of_pkg") or 0,
+                "wt": b.get("wt") or 0,
+                "freight_amount": b.get("freight_amount") or 0,
+                "pf_charge": b.get("pf_charge") or 0,
+                "dd_charge": b.get("dd_charge") or 0,
+                "labour_charge": b.get("labour_charge") or 0,
+                "bill_charge": b.get("bill_charge") or 0,
+                "toll_charge": b.get("toll_charge") or 0,
+                "other_charge": b.get("other_charge") or 0,
+                "total": b.get("total") or 0,
+                "contain": _safe(b.get("contain")),
+                "pvt_marks": _safe(b.get("pvt_marks")),
+                "remark": _safe(b.get("remark")),
+            })
+        for s in _fetch_sbs_by_gr_nos(sb, missing_list):
+            gr = s["gr_no"]
+            if gr in seen:
+                continue
+            seen.add(gr)
+            created_raw = s.get("created_at") or ""
+            unified.append({
+                "source": "manual",
+                "gr_no": gr,
+                "bilty_date": created_raw[:10],
+                "transport_name": _safe(s.get("transport_name")),
+                "transport_gst": _safe(s.get("transport_gst")),
+                "consignor_name": _safe(s.get("consignor")),
+                "consignee_name": _safe(s.get("consignee")),
+                "city_id_from": None,
+                "city_id_to": s.get("city_id"),
+                "payment_mode": _safe(s.get("payment_status")),
+                "no_of_pkg": s.get("no_of_packets") or 0,
+                "wt": s.get("weight") or 0,
+                "freight_amount": s.get("amount") or 0,
+                "pf_charge": 0,
+                "dd_charge": 0,
+                "labour_charge": 0,
+                "bill_charge": 0,
+                "toll_charge": 0,
+                "other_charge": 0,
+                "total": s.get("amount") or 0,
+                "contain": _safe(s.get("contents")),
+                "pvt_marks": _safe(s.get("pvt_marks")),
+                "remark": _safe(s.get("delivery_type")),
+            })
+
+    gr_nos = [b["gr_no"] for b in unified]
+    kaat_map = _fetch_kaat(sb, gr_nos)
 
     all_challan_nos = list({row["challan_no"] for row in kaat_map.values() if row.get("challan_no")})
     challan_dispatch_map = _fetch_challan_dispatch(sb, all_challan_nos)
@@ -346,6 +412,7 @@ def _fetch_challan_dispatch(sb, challan_nos):
 def _fetch_pohonch_maps(sb, transport_filter, is_gstin):
     gr_to_pohonch_number = {}
     gr_to_crossing_challans = {}
+    all_pohonch_gr_nos = set()
     page = 0
     while True:
         lo, hi = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1
@@ -369,10 +436,11 @@ def _fetch_pohonch_maps(sb, transport_filter, is_gstin):
                 if gr:
                     gr_to_pohonch_number[gr] = pno
                     gr_to_crossing_challans[gr] = crossing
+                    all_pohonch_gr_nos.add(gr)
         if len(batch) < PAGE_SIZE:
             break
         page += 1
-    return gr_to_pohonch_number, gr_to_crossing_challans
+    return gr_to_pohonch_number, gr_to_crossing_challans, all_pohonch_gr_nos
 
 
 def _fetch_cities(sb, city_ids):
@@ -384,3 +452,42 @@ def _fetch_cities(sb, city_ids):
         for c in res.data or []:
             city_map[c["id"]] = c.get("city_name", "")
     return city_map
+
+
+def _fetch_bilty_by_gr_nos(sb, gr_nos):
+    """Fetch bilty rows by gr_no list (no transport filter — used for crossing-challan bilties)."""
+    rows = []
+    for chunk in _chunks(gr_nos, 100):
+        res = (
+            sb.table("bilty")
+            .select(
+                "gr_no, bilty_date, transport_name, transport_gst, "
+                "consignor_name, consignee_name, from_city_id, to_city_id, "
+                "payment_mode, no_of_pkg, wt, freight_amount, pf_charge, "
+                "dd_charge, labour_charge, bill_charge, toll_charge, "
+                "other_charge, total, contain, pvt_marks, remark"
+            )
+            .eq("is_active", True)
+            .in_("gr_no", chunk)
+            .execute()
+        )
+        rows.extend(res.data or [])
+    return rows
+
+
+def _fetch_sbs_by_gr_nos(sb, gr_nos):
+    """Fetch station_bilty_summary rows by gr_no list (no transport filter)."""
+    rows = []
+    for chunk in _chunks(gr_nos, 100):
+        res = (
+            sb.table("station_bilty_summary")
+            .select(
+                "gr_no, created_at, transport_name, transport_gst, "
+                "consignor, consignee, city_id, payment_status, "
+                "no_of_packets, weight, amount, contents, pvt_marks, delivery_type"
+            )
+            .in_("gr_no", chunk)
+            .execute()
+        )
+        rows.extend(res.data or [])
+    return rows
