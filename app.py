@@ -1009,6 +1009,51 @@ async def transport_pending_bilties():
 
 
 # ============================================================
+# TRANSPORT BILTY REPORT  (must be BEFORE the {bilty_id} catch-all)
+# ============================================================
+
+
+@app.get("/api/bilty/transport-report")
+async def transport_bilty_report(
+    transport_gstin: str = Query(None, description="Transport GSTIN (exact match, preferred)"),
+    transport_name:  str = Query(None, description="Transport name (partial match, fallback)"),
+    from_date: str = Query(..., description="Start date inclusive  YYYY-MM-DD"),
+    to_date:   str = Query(..., description="End date inclusive    YYYY-MM-DD"),
+):
+    """
+    Fetch all bilties for a transport in a date range, merged from both
+    `bilty` and `station_bilty_summary` tables.
+
+    For each bilty the response includes:
+    - `pohonch_number`       – internal pohonch code (e.g. HC0002)
+    - `has_crossing_challan` – true / false
+    - `crossing_challans`    – pipe-separated challan numbers (e.g. "0239 | B00017")
+    - `dest_pohonch_no`      – destination bilty number from bilty_wise_kaat
+    - kaat / kaat_pf / kaat_dd / kaat_rate
+
+    Response `bilties` array is sorted:
+      1. Bilties WITH pohonch — ascending gr_no
+      2. Bilties WITHOUT pohonch — ascending gr_no
+
+    At least one of `transport_gstin` or `transport_name` is required.
+    """
+    if not transport_gstin and not transport_name:
+        return JSONResponse(
+            content={"status": "error", "message": "transport_gstin or transport_name is required"},
+            status_code=400,
+        )
+    try:
+        result = await _run(
+            get_transport_bilty_report,
+            transport_gstin, transport_name, from_date, to_date,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in transport_bilty_report: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
 # BILTY GET (catch-all — must be AFTER all /api/bilty/... routes)
 # ============================================================
 
@@ -1198,51 +1243,6 @@ async def pohonch_get(pohonch_id: str = Path(...)):
         result = await _run(get_pohonch, pohonch_id)
         return _response(result)
     except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
-
-# ============================================================
-# TRANSPORT BILTY REPORT
-# ============================================================
-
-
-@app.get("/api/bilty/transport-report")
-async def transport_bilty_report(
-    transport_gstin: str = Query(None, description="Transport GSTIN (exact match, preferred)"),
-    transport_name:  str = Query(None, description="Transport name (partial match, fallback)"),
-    from_date: str = Query(..., description="Start date inclusive  YYYY-MM-DD"),
-    to_date:   str = Query(..., description="End date inclusive    YYYY-MM-DD"),
-):
-    """
-    Fetch all bilties for a transport in a date range, merged from both
-    `bilty` and `station_bilty_summary` tables.
-
-    For each bilty the response includes:
-    - `pohonch_number`       – internal pohonch code (e.g. HC0002)
-    - `has_crossing_challan` – true / false
-    - `crossing_challans`    – pipe-separated challan numbers (e.g. "0239 | B00017")
-    - `dest_pohonch_no`      – destination bilty number from bilty_wise_kaat
-    - kaat / kaat_pf / kaat_dd / kaat_rate
-
-    Response `bilties` array is sorted:
-      1. Bilties WITH pohonch — ascending gr_no
-      2. Bilties WITHOUT pohonch — ascending gr_no
-
-    At least one of `transport_gstin` or `transport_name` is required.
-    """
-    if not transport_gstin and not transport_name:
-        return JSONResponse(
-            content={"status": "error", "message": "transport_gstin or transport_name is required"},
-            status_code=400,
-        )
-    try:
-        result = await _run(
-            get_transport_bilty_report,
-            transport_gstin, transport_name, from_date, to_date,
-        )
-        return _response(result)
-    except Exception as e:
-        log.exception("Error in transport_bilty_report: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
