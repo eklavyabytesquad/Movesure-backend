@@ -1022,18 +1022,24 @@ async def transport_bilty_report(
 ):
     """
     Fetch all bilties for a transport in a date range, merged from both
-    `bilty` and `station_bilty_summary` tables.
+    `bilty` (type=regular) and `station_bilty_summary` (type=manual) tables.
 
-    For each bilty the response includes:
-    - `pohonch_number`       – internal pohonch code (e.g. HC0002)
-    - `has_crossing_challan` – true / false
-    - `crossing_challans`    – pipe-separated challan numbers (e.g. "0239 | B00017")
-    - `dest_pohonch_no`      – destination bilty number from bilty_wise_kaat
-    - kaat / kaat_pf / kaat_dd / kaat_rate
+    Response structure:
+    {
+      "with_pohonch": {
+        "<pohonch_number>": {
+          "regular": [ ...bilties from bilty table... ],
+          "manual":  [ ...bilties from station_bilty_summary... ]
+        }
+      },
+      "no_pohonch": {
+        "<challan_no>": [ ...bilties... ],
+        "UNKNOWN":      [ ...bilties with no challan... ]
+      }
+    }
 
-    Response `bilties` array is sorted:
-      1. Bilties WITH pohonch — ascending gr_no
-      2. Bilties WITHOUT pohonch — ascending gr_no
+    Each bilty includes: challan_no, challan_dispatch_date, pohonch_number,
+    has_crossing_challan, crossing_challans, kaat fields.
 
     At least one of `transport_gstin` or `transport_name` is required.
     """
