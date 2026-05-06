@@ -264,8 +264,7 @@ def bulk_update_kaat_rate(
         payment_mode = info.get("payment_mode", "to-pay")
         # dd: use new value if caller provided it, else keep existing
         dd    = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
-        effective_wt = max(wt, 50)  # minimum billable weight is 50 kg
-        kaat  = round(effective_wt * new_kaat_rate, 2)
+        kaat  = round(wt * new_kaat_rate, 2)
         # paid bilties: pf is negative (transport owes the consignor)
         raw_pf = round(total - kaat - dd, 2)
         pf     = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
@@ -391,8 +390,7 @@ def update_single_gr_kaat(
     if kaat_rate is not None:
         if wt is None:
             return {"status": "error", "message": f"Could not find weight for GR '{gr_no}'", "status_code": 404}
-        effective_wt = max(wt, 50)  # minimum billable weight is 50 kg
-        new_kaat = round(effective_wt * kaat_rate, 2)
+        new_kaat = round(wt * kaat_rate, 2)
         payload["actual_kaat_rate"] = kaat_rate
         payload["kaat"] = new_kaat
     elif kaat is not None:
