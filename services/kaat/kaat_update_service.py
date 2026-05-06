@@ -32,6 +32,66 @@ def _chunks(lst, n):
 
 
 # ---------------------------------------------------------------------------
+# Sync updated kaat values back into pohonch.bilty_metadata
+# ---------------------------------------------------------------------------
+
+def _sync_pohonch_metadata(sb, updates: list[dict]) -> int:
+    """
+    For each updated gr_no, find every pohonch row whose bilty_metadata
+    contains that gr_no and patch kaat, pf, dd, kaat_rate in-place.
+
+    `updates` is a list of dicts with keys:
+        gr_no, kaat, pf, kaat_rate (optional), kaat_dd (optional)
+
+    Returns number of pohonch rows touched.
+    """
+    if not updates:
+        return 0
+
+    # Build a lookup: gr_no → updated values
+    update_map: dict[str, dict] = {}
+    for u in updates:
+        update_map[u["gr_no"]] = u
+
+    gr_nos = list(update_map.keys())
+
+    # Fetch all pohonch rows that might contain any of these gr_nos.
+    # We check every pohonch row (pohonch table is small) for simplicity.
+    all_pohonch = sb.table("pohonch").select("id, pohonch_number, bilty_metadata").execute()
+
+    touched = 0
+    for row in (all_pohonch.data or []):
+        meta = row.get("bilty_metadata") or []
+        changed = False
+        new_meta = []
+        for entry in meta:
+            gr = entry.get("gr_no")
+            if gr in update_map:
+                upd = update_map[gr]
+                new_entry = dict(entry)
+                new_entry["kaat"]  = upd.get("kaat",  entry.get("kaat"))
+                new_entry["pf"]    = upd.get("pf",    entry.get("pf"))
+                # amount in pohonch metadata = pf + kaat + dd
+                dd = upd.get("kaat_dd") if upd.get("kaat_dd") is not None else entry.get("dd", 0)
+                new_entry["dd"]    = dd
+                new_entry["amount"] = round(
+                    (new_entry["pf"] or 0) + (new_entry["kaat"] or 0) + (dd or 0), 2
+                )
+                if upd.get("kaat_rate") is not None:
+                    new_entry["kaat_rate"] = upd["kaat_rate"]
+                changed = True
+                new_meta.append(new_entry)
+            else:
+                new_meta.append(entry)
+
+        if changed:
+            sb.table("pohonch").update({"bilty_metadata": new_meta}).eq("id", row["id"]).execute()
+            touched += 1
+
+    return touched
+
+
+# ---------------------------------------------------------------------------
 # Helpers to fetch city IDs matching a station name
 # ---------------------------------------------------------------------------
 
@@ -215,6 +275,9 @@ def bulk_update_kaat_rate(
         else:
             not_in_kaat.append(gr_no)
 
+    # Sync updated values into pohonch bilty_metadata
+    pohonch_touched = _sync_pohonch_metadata(sb, updated)
+
     return {
         "status": "success",
         "transport_gstin": transport_gstin.upper(),
@@ -227,6 +290,7 @@ def bulk_update_kaat_rate(
         "updated_count": len(updated),
         "skipped_count": len(not_in_kaat),
         "skipped_gr_nos": not_in_kaat,
+        "pohonch_rows_synced": pohonch_touched,
         "updated": updated,
     }
 
@@ -331,7 +395,7 @@ def update_single_gr_kaat(
         return {"status": "error", "message": "Update failed — row not found or unchanged", "status_code": 500}
 
     row = res.data[0]
-    return {
+    result = {
         "status": "success",
         "gr_no": gr_no,
         "updated": {
@@ -343,3 +407,14 @@ def update_single_gr_kaat(
         "weight": wt,
         "total": total,
     }
+
+    # Sync into pohonch bilty_metadata
+    _sync_pohonch_metadata(sb, [{
+        "gr_no": gr_no,
+        "kaat": row.get("kaat"),
+        "pf": row.get("pf"),
+        "kaat_rate": row.get("actual_kaat_rate"),
+        "kaat_dd": row.get("dd_chrg"),
+    }])
+
+    return result
