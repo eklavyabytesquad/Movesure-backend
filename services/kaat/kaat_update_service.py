@@ -238,6 +238,13 @@ def bulk_update_kaat_rate(
             "updated": [],
         }
 
+    # Fetch existing dd_chrg for all gr_nos so pf = total - kaat - dd is correct
+    existing_dd: dict[str, float] = {}
+    for chunk in _chunks(list(gr_info.keys()), PAGE_SIZE):
+        dd_rows = sb.table("bilty_wise_kaat").select("gr_no, dd_chrg").in_("gr_no", chunk).execute()
+        for r in (dd_rows.data or []):
+            existing_dd[r["gr_no"]] = r.get("dd_chrg") or 0
+
     # Recalculate and update each GR in bilty_wise_kaat
     updated = []
     not_in_kaat = []
@@ -245,8 +252,10 @@ def bulk_update_kaat_rate(
     for gr_no, info in gr_info.items():
         wt    = info["wt"]
         total = info["total"]
+        # dd: use new value if caller provided it, else keep existing
+        dd    = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
         kaat  = round(wt * new_kaat_rate, 2)
-        pf    = round(total - kaat, 2)
+        pf    = round(total - kaat - dd, 2)
 
         payload: dict = {
             "actual_kaat_rate": new_kaat_rate,
@@ -270,7 +279,7 @@ def bulk_update_kaat_rate(
                 "kaat_rate": new_kaat_rate,
                 "kaat": kaat,
                 "pf": pf,
-                **({"kaat_dd": new_kaat_dd} if new_kaat_dd is not None else {}),
+                "kaat_dd": dd,
             })
         else:
             not_in_kaat.append(gr_no)
@@ -311,9 +320,9 @@ def update_single_gr_kaat(
 
     Priority logic:
       - If kaat_rate is given → kaat = weight * kaat_rate (fetched from bilty/sbs)
-                                pf   = total - kaat
+                                pf   = total - kaat - dd
       - If kaat is given directly (no kaat_rate) → use it as-is,
-                                pf = total - kaat (fetched from bilty/sbs)
+                                pf = total - kaat - dd (fetched from bilty/sbs)
       - If only kaat_dd is given → update only dd_chrg
       - pf_override: if explicitly provided, overrides the calculated pf
     """
@@ -376,11 +385,13 @@ def update_single_gr_kaat(
     else:
         new_kaat = current.get("kaat") or 0
 
-    # Determine new pf
+    # Determine new pf: pf = total - kaat - dd
     if pf_override is not None:
         payload["pf"] = pf_override
     elif "kaat" in payload and total is not None:
-        payload["pf"] = round(total - new_kaat, 2)
+        # use incoming kaat_dd if provided, otherwise keep existing dd_chrg
+        dd_for_pf = kaat_dd if kaat_dd is not None else (current.get("dd_chrg") or 0)
+        payload["pf"] = round(total - new_kaat - dd_for_pf, 2)
 
     if kaat_dd is not None:
         payload["dd_chrg"] = kaat_dd
