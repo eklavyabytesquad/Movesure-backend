@@ -21,6 +21,8 @@ log = logging.getLogger("movesure")
 from fastapi import FastAPI, Request, Query, Path
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import datetime
 import asyncio
@@ -53,6 +55,7 @@ from services.bilty.master_data_service import (
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
+from services.kaat.kaat_update_service import bulk_update_kaat_rate, update_single_gr_kaat
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -1056,6 +1059,76 @@ async def transport_bilty_report(
         return _response(result)
     except Exception as e:
         log.exception("Error in transport_bilty_report: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# KAAT UPDATE ENDPOINTS
+# ============================================================
+
+class BulkKaatUpdateRequest(BaseModel):
+    transport_gstin: str
+    from_date: str
+    to_date: str
+    station_name: str
+    new_kaat_rate: float
+    new_kaat_dd: Optional[float] = None
+
+
+class SingleGrKaatUpdateRequest(BaseModel):
+    kaat_rate: Optional[float] = None
+    kaat: Optional[float] = None
+    kaat_dd: Optional[float] = None
+    pf: Optional[float] = None
+
+
+@app.post("/api/kaat/bulk-update")
+async def kaat_bulk_update(body: BulkKaatUpdateRequest):
+    """
+    Bulk update kaat_rate (and optionally kaat_dd) for all bilties of a
+    transport in a date range filtered by destination station.
+
+    Body:
+      transport_gstin  — exact GSTIN
+      from_date        — YYYY-MM-DD (inclusive)
+      to_date          — YYYY-MM-DD (inclusive)
+      station_name     — partial city name, e.g. "SULTANPUR", "PRATAPGARH"
+      new_kaat_rate    — new rate (kaat = weight * new_kaat_rate)
+      new_kaat_dd      — optional, updates dd_chrg on each bilty
+    """
+    try:
+        result = await _run(
+            bulk_update_kaat_rate,
+            body.transport_gstin, body.from_date, body.to_date,
+            body.station_name, body.new_kaat_rate, body.new_kaat_dd,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_bulk_update: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.patch("/api/kaat/gr/{gr_no}")
+async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to update"), body: SingleGrKaatUpdateRequest = None):
+    """
+    Update kaat fields for a single GR number.
+
+    Body (all optional, at least one required):
+      kaat_rate  — recalculates kaat = weight * kaat_rate, pf = total - kaat
+      kaat       — set kaat directly; pf = total - kaat is recalculated
+      kaat_dd    — update dd_chrg only
+      pf         — override pf directly
+    """
+    if body is None:
+        return JSONResponse(content={"status": "error", "message": "Request body is required"}, status_code=400)
+    try:
+        result = await _run(
+            update_single_gr_kaat,
+            gr_no, body.kaat_rate, body.kaat, body.kaat_dd, body.pf,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_single_gr_update: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
