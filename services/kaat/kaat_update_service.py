@@ -113,7 +113,7 @@ def _resolve_city_ids(sb, station_name: str) -> list[str]:
 def _fetch_bilty_gr_info(sb, transport_gstin: str, from_date: str, to_date: str,
                           city_ids: Optional[list] = None) -> list[dict]:
     """
-    Returns list of {gr_no, wt, total, to_city_id} from bilty table.
+    Returns list of {gr_no, wt, total, to_city_id, payment_mode} from bilty table.
     Optionally restricted to specific city_ids.
     """
     rows, page = [], 0
@@ -121,7 +121,7 @@ def _fetch_bilty_gr_info(sb, transport_gstin: str, from_date: str, to_date: str,
         lo, hi = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1
         q = (
             sb.table("bilty")
-            .select("gr_no, wt, total, to_city_id")
+            .select("gr_no, wt, total, to_city_id, payment_mode")
             .eq("is_active", True)
             .eq("transport_gst", transport_gstin.strip().upper())
             .gte("bilty_date", from_date)
@@ -141,15 +141,15 @@ def _fetch_bilty_gr_info(sb, transport_gstin: str, from_date: str, to_date: str,
 def _fetch_sbs_gr_info(sb, transport_gstin: str, from_date: str, to_date_exclusive: str,
                         city_ids: Optional[list] = None) -> list[dict]:
     """
-    Returns list of {gr_no, weight as wt, amount as total, city_id as to_city_id}
-    from station_bilty_summary table.
+    Returns list of {gr_no, wt, total, to_city_id, payment_mode}
+    from station_bilty_summary table (payment_status normalised to payment_mode).
     """
     rows, page = [], 0
     while True:
         lo, hi = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1
         q = (
             sb.table("station_bilty_summary")
-            .select("gr_no, weight, amount, city_id")
+            .select("gr_no, weight, amount, city_id, payment_status")
             .eq("transport_gst", transport_gstin.strip().upper())
             .gte("created_at", from_date)
             .lt("created_at", to_date_exclusive)
@@ -164,6 +164,7 @@ def _fetch_sbs_gr_info(sb, transport_gstin: str, from_date: str, to_date_exclusi
             "wt": r.get("weight") or 0,
             "total": r.get("amount") or 0,
             "to_city_id": r.get("city_id"),
+            "payment_mode": r.get("payment_status") or "to-pay",
         } for r in batch)
         if len(batch) < PAGE_SIZE:
             break
@@ -223,12 +224,20 @@ def bulk_update_kaat_rate(
         gr = r["gr_no"]
         if gr not in seen:
             seen.add(gr)
-            gr_info[gr] = {"wt": r.get("wt") or 0, "total": r.get("total") or 0}
+            gr_info[gr] = {
+                "wt": r.get("wt") or 0,
+                "total": r.get("total") or 0,
+                "payment_mode": r.get("payment_mode") or "to-pay",
+            }
     for r in sbs_rows:
         gr = r["gr_no"]
         if gr not in seen:
             seen.add(gr)
-            gr_info[gr] = {"wt": r.get("wt") or 0, "total": r.get("total") or 0}
+            gr_info[gr] = {
+                "wt": r.get("wt") or 0,
+                "total": r.get("total") or 0,
+                "payment_mode": r.get("payment_mode") or "to-pay",
+            }
 
     if not gr_info:
         return {
@@ -250,12 +259,15 @@ def bulk_update_kaat_rate(
     not_in_kaat = []
 
     for gr_no, info in gr_info.items():
-        wt    = info["wt"]
-        total = info["total"]
+        wt           = info["wt"]
+        total        = info["total"]
+        payment_mode = info.get("payment_mode", "to-pay")
         # dd: use new value if caller provided it, else keep existing
         dd    = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
         kaat  = round(wt * new_kaat_rate, 2)
-        pf    = round(total - kaat - dd, 2)
+        # paid bilties: pf is negative (transport owes the consignor)
+        raw_pf = round(total - kaat - dd, 2)
+        pf     = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
 
         payload: dict = {
             "actual_kaat_rate": new_kaat_rate,
@@ -345,30 +357,32 @@ def update_single_gr_kaat(
 
     current = kaat_res.data[0]
 
-    # Fetch weight and total from bilty or station_bilty_summary
-    wt, total = None, None
+    # Fetch weight, total and payment_mode from bilty or station_bilty_summary
+    wt, total, payment_mode = None, None, "to-pay"
     bilty_res = (
         sb.table("bilty")
-        .select("wt, total")
+        .select("wt, total, payment_mode")
         .eq("gr_no", gr_no)
         .eq("is_active", True)
         .limit(1)
         .execute()
     )
     if bilty_res.data:
-        wt    = bilty_res.data[0].get("wt") or 0
-        total = bilty_res.data[0].get("total") or 0
+        wt           = bilty_res.data[0].get("wt") or 0
+        total        = bilty_res.data[0].get("total") or 0
+        payment_mode = bilty_res.data[0].get("payment_mode") or "to-pay"
     else:
         sbs_res = (
             sb.table("station_bilty_summary")
-            .select("weight, amount")
+            .select("weight, amount, payment_status")
             .eq("gr_no", gr_no)
             .limit(1)
             .execute()
         )
         if sbs_res.data:
-            wt    = sbs_res.data[0].get("weight") or 0
-            total = sbs_res.data[0].get("amount") or 0
+            wt           = sbs_res.data[0].get("weight") or 0
+            total        = sbs_res.data[0].get("amount") or 0
+            payment_mode = sbs_res.data[0].get("payment_status") or "to-pay"
 
     payload: dict = {}
 
@@ -385,13 +399,15 @@ def update_single_gr_kaat(
     else:
         new_kaat = current.get("kaat") or 0
 
-    # Determine new pf: pf = total - kaat - dd
+    # Determine new pf: pf = total - kaat - dd (negative for paid bilties)
     if pf_override is not None:
         payload["pf"] = pf_override
     elif "kaat" in payload and total is not None:
         # use incoming kaat_dd if provided, otherwise keep existing dd_chrg
         dd_for_pf = kaat_dd if kaat_dd is not None else (current.get("dd_chrg") or 0)
-        payload["pf"] = round(total - new_kaat - dd_for_pf, 2)
+        raw_pf = round(total - new_kaat - dd_for_pf, 2)
+        # paid bilties: pf is negative (transport owes the consignor)
+        payload["pf"] = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
 
     if kaat_dd is not None:
         payload["dd_chrg"] = kaat_dd
