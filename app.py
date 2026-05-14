@@ -149,7 +149,6 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests_responses(request: Request, call_next):
     import json
-    from io import BytesIO
 
     request_id = f"{datetime.now().isoformat()}"
 
@@ -172,26 +171,12 @@ async def log_requests_responses(request: Request, call_next):
         except:
             log.info(f"  Body: {request_body.decode('utf-8', errors='ignore')}")
 
-    # Call the endpoint
+    # Call the endpoint and measure time
     start_time = time.time()
     response = await call_next(request)
     elapsed_time = time.time() - start_time
 
     log.info(f"[RESPONSE #{request_id}] Status: {response.status_code} | Time: {elapsed_time:.3f}s")
-
-    # Try to log response body if it's JSON
-    try:
-        if hasattr(response, 'body'):
-            response_body = response.body
-            if response_body:
-                try:
-                    body_dict = json.loads(response_body)
-                    log.info(f"  Body: {json.dumps(body_dict, indent=2)}")
-                except:
-                    log.info(f"  Body: {response_body.decode('utf-8', errors='ignore')[:500]}")
-    except:
-        log.info("  Body: (streaming response - not logged)")
-
     log.info(f"{'='*80}\n")
 
     return response
@@ -1292,9 +1277,13 @@ async def save_bilty_payment_endpoint(request: Request):
 async def get_bilty_payment_endpoint(bilty_id: str = Path(...)):
     """Get payment details for a specific bilty."""
     try:
+        log.info(f"[GET /api/bilty/payment] Fetching payment details for bilty_id: {bilty_id}")
         result = await _run(get_bilty_payment_details, bilty_id)
+        import json
+        log.info(f"[GET /api/bilty/payment] Response: {json.dumps(result, indent=2, default=str)}")
         return _response(result)
     except Exception as e:
+        log.error(f"[GET /api/bilty/payment] Error: {str(e)}", exc_info=True)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -1340,9 +1329,13 @@ async def save_station_bilty_payment_endpoint(request: Request):
 async def get_station_bilty_payment_endpoint(gr_no: str = Path(...)):
     """Get payment details for a station_bilty_summary by GR number."""
     try:
+        log.info(f"[GET /api/station-bilty/payment] Fetching payment details for gr_no: {gr_no}")
         result = await _run(get_station_bilty_payment_details, gr_no)
+        import json
+        log.info(f"[GET /api/station-bilty/payment] Response: {json.dumps(result, indent=2, default=str)}")
         return _response(result)
     except Exception as e:
+        log.error(f"[GET /api/station-bilty/payment] Error: {str(e)}", exc_info=True)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
