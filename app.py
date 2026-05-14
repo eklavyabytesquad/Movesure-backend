@@ -144,6 +144,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── Comprehensive Request/Response Logging Middleware ──────────────
+from starlette.responses import Response as StarletteResponse
+
+@app.middleware("http")
+async def log_requests_responses(request: Request, call_next):
+    import json
+
+    request_id = f"{datetime.now().isoformat()}"
+
+    # Log request details
+    request_body = b""
+    if request.method in ["POST", "PUT", "PATCH"]:
+        request_body = await request.body()
+        request._body = request_body
+
+    log.info(f"\n{'='*80}")
+    log.info(f"[REQUEST #{request_id}] {request.method} {request.url.path}")
+
+    if request.query_params:
+        log.info(f"  Query Params: {dict(request.query_params)}")
+
+    if request_body:
+        try:
+            body_dict = json.loads(request_body)
+            log.info(f"  Body: {json.dumps(body_dict, indent=2)}")
+        except:
+            log.info(f"  Body: {request_body.decode('utf-8', errors='ignore')}")
+
+    # Call the endpoint
+    start_time = time.time()
+    response = await call_next(request)
+    elapsed_time = time.time() - start_time
+
+    # Read response body
+    response_body = b""
+    async for chunk in response.body_parts:
+        response_body += chunk
+
+    log.info(f"[RESPONSE #{request_id}] Status: {response.status_code} | Time: {elapsed_time:.3f}s")
+
+    if response_body:
+        try:
+            body_dict = json.loads(response_body)
+            log.info(f"  Body: {json.dumps(body_dict, indent=2)}")
+        except:
+            log.info(f"  Body: {response_body.decode('utf-8', errors='ignore')[:500]}")
+
+    log.info(f"{'='*80}\n")
+
+    # Return response with original body
+    return StarletteResponse(
+        content=response_body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type
+    )
+
+
 # Thread pool for running blocking service calls without blocking the event loop
 # Sized to handle concurrent requests — services reuse this pool instead of creating their own
 _executor = ThreadPoolExecutor(max_workers=20)
