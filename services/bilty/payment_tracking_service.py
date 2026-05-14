@@ -125,13 +125,6 @@ def save_bilty_payment(bilty_id: str, payment_data: dict) -> dict:
                 "status_code": 400
             }
 
-        if advance_amount > total_amount:
-            return {
-                "status": "error",
-                "message": f"advance_amount ({advance_amount}) cannot exceed total ({total_amount})",
-                "status_code": 400
-            }
-
         # Build payment details
         remaining_amount = _calculate_remaining(total_amount, advance_amount)
         payment_status = _get_payment_status(payment_mode, advance_amount, total_amount)
@@ -254,13 +247,6 @@ def save_station_bilty_payment(gr_no: str, payment_data: dict) -> dict:
             return {
                 "status": "error",
                 "message": "advance_amount cannot be negative",
-                "status_code": 400
-            }
-
-        if advance_amount > total_amount:
-            return {
-                "status": "error",
-                "message": f"advance_amount ({advance_amount}) cannot exceed total ({total_amount})",
                 "status_code": 400
             }
 
