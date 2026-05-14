@@ -41,6 +41,10 @@ from services.ewaybill.transporter_details_service import get_transporter_detail
 from services.ewaybill.generate_ewaybill_service import generate_ewaybill
 from services.bilty.reference_data_service import get_reference_data
 from services.bilty.bilty_save_service import save_bilty, get_bilty_with_cities
+from services.bilty.payment_tracking_service import (
+    save_bilty_payment, save_station_bilty_payment,
+    get_bilty_payment_details, get_station_bilty_payment_details
+)
 from services.bilty.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates, calculate_dd_charge
 from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
@@ -56,6 +60,7 @@ from services.bilty.transport_pending_service import get_all_transport_pending_b
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
 from services.kaat.kaat_update_service import bulk_update_kaat_rate, update_single_gr_kaat
+from services.kaat.kaat_bill_report_service import get_kaat_bill_report
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -110,6 +115,10 @@ async def lifespan(app):
         "GET  /api/bilty/reference-data?branch_id=XXX&user_id=YYY",
         "POST /api/bilty/save",
         "GET  /api/bilty/{bilty_id}",
+        "POST /api/bilty/payment/save",
+        "GET  /api/bilty/payment/{bilty_id}",
+        "POST /api/station-bilty/payment/save",
+        "GET  /api/station-bilty/payment/{gr_no}",
         "GET  /api/bilty/rates/consignor/{consignor_id}",
         "GET  /api/bilty/rates/default?branch_id=XXX",
         "GET  /api/bilty/rates/all?consignor_id=XXX&branch_id=YYY",
@@ -198,7 +207,7 @@ SKIP_AUTH_PATHS = {"/api/health", "/api/refresh-token", "/docs", "/openapi.json"
 @app.middleware("http")
 async def ensure_valid_token(request: Request, call_next):
     path = request.url.path
-    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty") or path.startswith("/api/challan"):
+    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty") or path.startswith("/api/station-bilty") or path.startswith("/api/challan"):
         return await call_next(request)
 
     log.info("Token check: %s %s", request.method, path)
@@ -1108,6 +1117,38 @@ async def kaat_bulk_update(body: BulkKaatUpdateRequest):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+class KaatBillReportRequest(BaseModel):
+    transport_gstin: str
+    from_date: str
+    to_date: str
+
+
+@app.post("/api/kaat/bill-report")
+async def kaat_bill_report(body: KaatBillReportRequest):
+    """
+    Generate kaat bill data for a transport over a date range.
+
+    Body:
+      transport_gstin  — exact GSTIN of the transport company
+      from_date        — YYYY-MM-DD (inclusive)
+      to_date          — YYYY-MM-DD (inclusive)
+
+    Returns per-bilty: gr_no, pohonch nos, destination, payment_mode,
+    delivery_type, pkgs, pvt_marks, weight, kaat_rate, dd, kaat,
+    to_pay (null for paid), total (null for paid), pf ('PAID' for paid).
+    Plus summary totals.
+    """
+    try:
+        result = await _run(
+            get_kaat_bill_report,
+            body.transport_gstin, body.from_date, body.to_date,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_bill_report: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.patch("/api/kaat/gr/{gr_no}")
 async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to update"), body: SingleGrKaatUpdateRequest = None):
     """
@@ -1141,6 +1182,112 @@ async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to
 async def bilty_get(bilty_id: str = Path(...)):
     try:
         result = await _run(get_bilty_with_cities, bilty_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# PAYMENT TRACKING ENDPOINTS - Bilty & Station Summary
+# ============================================================
+
+
+@app.post("/api/bilty/payment/save")
+async def save_bilty_payment_endpoint(request: Request):
+    """
+    Save payment details for a bilty.
+
+    Body: {
+        "bilty_id": "uuid",
+        "payment_mode": "cash|online|partial|foc",
+        "advance_amount": <numeric>,
+        "payment_date": "2026-05-15" (optional),
+        "payment_method": "cash|cheque|bank_transfer|upi" (optional),
+        "reference_number": "CHQ123456" (optional),
+        "notes": "payment notes" (optional),
+        "add_transaction": {
+            "amount": <numeric>,
+            "method": "cash",
+            "reference": "RECEIPT-001",
+            "notes": "advance payment"
+        } (optional)
+    }
+    """
+    try:
+        data = await request.json()
+        bilty_id = data.get("bilty_id")
+        if not bilty_id:
+            return JSONResponse(content={"status": "error", "message": "bilty_id is required"}, status_code=400)
+
+        payment_data = {
+            "payment_mode": data.get("payment_mode"),
+            "advance_amount": data.get("advance_amount", 0),
+            "payment_date": data.get("payment_date"),
+            "payment_method": data.get("payment_method"),
+            "reference_number": data.get("reference_number"),
+            "notes": data.get("notes"),
+            "add_transaction": data.get("add_transaction")
+        }
+
+        result = await _run(save_bilty_payment, bilty_id, payment_data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/payment/{bilty_id}")
+async def get_bilty_payment_endpoint(bilty_id: str = Path(...)):
+    """Get payment details for a specific bilty."""
+    try:
+        result = await _run(get_bilty_payment_details, bilty_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/station-bilty/payment/save")
+async def save_station_bilty_payment_endpoint(request: Request):
+    """
+    Save payment details for a station_bilty_summary.
+
+    Body: {
+        "gr_no": "A00001",
+        "payment_mode": "cash|online|partial|foc",
+        "advance_amount": <numeric>,
+        "payment_date": "2026-05-15" (optional),
+        "payment_method": "cash|cheque|bank_transfer|upi" (optional),
+        "reference_number": "CHQ123456" (optional),
+        "notes": "payment notes" (optional),
+        "add_transaction": {...} (optional)
+    }
+    """
+    try:
+        data = await request.json()
+        gr_no = data.get("gr_no")
+        if not gr_no:
+            return JSONResponse(content={"status": "error", "message": "gr_no is required"}, status_code=400)
+
+        payment_data = {
+            "payment_mode": data.get("payment_mode"),
+            "advance_amount": data.get("advance_amount", 0),
+            "payment_date": data.get("payment_date"),
+            "payment_method": data.get("payment_method"),
+            "reference_number": data.get("reference_number"),
+            "notes": data.get("notes"),
+            "add_transaction": data.get("add_transaction")
+        }
+
+        result = await _run(save_station_bilty_payment, gr_no, payment_data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/station-bilty/payment/{gr_no}")
+async def get_station_bilty_payment_endpoint(gr_no: str = Path(...)):
+    """Get payment details for a station_bilty_summary by GR number."""
+    try:
+        result = await _run(get_station_bilty_payment_details, gr_no)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
