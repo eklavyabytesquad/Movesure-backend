@@ -146,11 +146,10 @@ app.add_middleware(
 
 
 # ── Comprehensive Request/Response Logging Middleware ──────────────
-from starlette.responses import Response as StarletteResponse
-
 @app.middleware("http")
 async def log_requests_responses(request: Request, call_next):
     import json
+    from io import BytesIO
 
     request_id = f"{datetime.now().isoformat()}"
 
@@ -178,29 +177,24 @@ async def log_requests_responses(request: Request, call_next):
     response = await call_next(request)
     elapsed_time = time.time() - start_time
 
-    # Read response body
-    response_body = b""
-    async for chunk in response.body_parts:
-        response_body += chunk
-
     log.info(f"[RESPONSE #{request_id}] Status: {response.status_code} | Time: {elapsed_time:.3f}s")
 
-    if response_body:
-        try:
-            body_dict = json.loads(response_body)
-            log.info(f"  Body: {json.dumps(body_dict, indent=2)}")
-        except:
-            log.info(f"  Body: {response_body.decode('utf-8', errors='ignore')[:500]}")
+    # Try to log response body if it's JSON
+    try:
+        if hasattr(response, 'body'):
+            response_body = response.body
+            if response_body:
+                try:
+                    body_dict = json.loads(response_body)
+                    log.info(f"  Body: {json.dumps(body_dict, indent=2)}")
+                except:
+                    log.info(f"  Body: {response_body.decode('utf-8', errors='ignore')[:500]}")
+    except:
+        log.info("  Body: (streaming response - not logged)")
 
     log.info(f"{'='*80}\n")
 
-    # Return response with original body
-    return StarletteResponse(
-        content=response_body,
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        media_type=response.media_type
-    )
+    return response
 
 
 # Thread pool for running blocking service calls without blocking the event loop
