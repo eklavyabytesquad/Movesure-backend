@@ -110,20 +110,9 @@ def save_bilty_payment(bilty_id: str, payment_data: dict) -> dict:
         reference_number = payment_data.get("reference_number")
         notes = payment_data.get("notes")
 
-        # Validate
+        # Minimal validation - only check payment_mode if required
         if not payment_mode:
-            return {
-                "status": "error",
-                "message": "payment_mode is required",
-                "status_code": 400
-            }
-
-        if advance_amount < 0:
-            return {
-                "status": "error",
-                "message": "advance_amount cannot be negative",
-                "status_code": 400
-            }
+            payment_mode = "pending"
 
         # Build payment details
         remaining_amount = _calculate_remaining(total_amount, advance_amount)
@@ -235,20 +224,9 @@ def save_station_bilty_payment(gr_no: str, payment_data: dict) -> dict:
         reference_number = payment_data.get("reference_number")
         notes = payment_data.get("notes")
 
-        # Validate
+        # Minimal validation - only check payment_mode if required
         if not payment_mode:
-            return {
-                "status": "error",
-                "message": "payment_mode is required",
-                "status_code": 400
-            }
-
-        if advance_amount < 0:
-            return {
-                "status": "error",
-                "message": "advance_amount cannot be negative",
-                "status_code": 400
-            }
+            payment_mode = "pending"
 
         # Build payment details
         remaining_amount = _calculate_remaining(total_amount, advance_amount)
