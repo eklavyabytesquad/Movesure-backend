@@ -40,6 +40,18 @@ def get_transport_bilty_report(
     from_date=None,
     to_date=None,
 ):
+    """
+    Get comprehensive transport bilty report with all details including content.
+
+    Each bilty includes:
+    - gr_no, bilty_number, dest_pohonch_no
+    - kaat, kaat_pf (Provider Fee), kaat_dd (DD/Deduction)
+    - payment_mode (paid/to-pay/foc)
+    - **contain: Goods/Contents description** ✓ INCLUDED
+    - All other charges and amounts
+
+    Returns grouped data by pohonch number.
+    """
     if not transport_gstin and not transport_name:
         return {"status": "error", "message": "transport_gstin or transport_name is required", "status_code": 400}
     if not from_date or not to_date:

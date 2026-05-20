@@ -95,15 +95,28 @@ def _sync_pohonch_metadata(sb, updates: list[dict]) -> int:
 # Helpers to fetch city IDs matching a station name
 # ---------------------------------------------------------------------------
 
-def _resolve_city_ids(sb, station_name: str) -> list[str]:
-    """Return all city IDs whose name matches station_name (case-insensitive partial)."""
+def _resolve_city_info(sb, station_name: str) -> tuple[list[str], list[str]]:
+    """
+    Return (city_ids, city_codes) for cities whose name matches station_name
+    (case-insensitive partial match).
+    city_codes are the short codes stored in station_bilty_summary.station column.
+    """
     res = (
         sb.table("cities")
-        .select("id, city_name")
+        .select("id, city_name, city_code")
         .ilike("city_name", f"%{station_name.strip()}%")
         .execute()
     )
-    return [r["id"] for r in (res.data or [])]
+    rows = res.data or []
+    city_ids   = [r["id"]        for r in rows]
+    city_codes = [r["city_code"] for r in rows if r.get("city_code")]
+    return city_ids, city_codes
+
+
+def _resolve_city_ids(sb, station_name: str) -> list[str]:
+    """Return all city IDs whose name matches station_name (case-insensitive partial)."""
+    ids, _ = _resolve_city_info(sb, station_name)
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +152,15 @@ def _fetch_bilty_gr_info(sb, transport_gstin: str, from_date: str, to_date: str,
 
 
 def _fetch_sbs_gr_info(sb, transport_gstin: str, from_date: str, to_date_exclusive: str,
-                        city_ids: Optional[list] = None) -> list[dict]:
+                        city_ids: Optional[list] = None,
+                        city_codes: Optional[list] = None) -> list[dict]:
     """
     Returns list of {gr_no, wt, total, to_city_id, payment_mode}
     from station_bilty_summary table (payment_status normalised to payment_mode).
+
+    Destination filtering uses city_id OR station (city code) because some
+    station bilties are created with city_id=NULL and only a short city code
+    stored in the station column.
     """
     rows, page = [], 0
     while True:
@@ -155,8 +173,15 @@ def _fetch_sbs_gr_info(sb, transport_gstin: str, from_date: str, to_date_exclusi
             .lt("created_at", to_date_exclusive)
             .range(lo, hi)
         )
-        if city_ids:
+        if city_ids and city_codes:
+            # OR: match by UUID city_id (when set) or by city code in station column.
+            ids_str   = ",".join(str(cid) for cid in city_ids)
+            codes_str = ",".join(str(c)   for c   in city_codes)
+            q = q.or_(f"city_id.in.({ids_str}),station.in.({codes_str})")
+        elif city_ids:
             q = q.in_("city_id", city_ids)
+        elif city_codes:
+            q = q.in_("station", city_codes)
         batch = q.execute().data or []
         # normalise keys
         rows.extend({
@@ -206,17 +231,13 @@ def bulk_update_kaat_rate(
     sb = get_supabase()
     to_date_excl = _next_day(to_date)
 
-    city_ids = _resolve_city_ids(sb, station_name)
-    if not city_ids:
-        return {
-            "status": "error",
-            "message": f"No city found matching '{station_name}'",
-            "status_code": 404,
-        }
+    city_ids, city_codes = _resolve_city_info(sb, station_name)
 
-    # Fetch bilties from both tables
-    bilty_rows = _fetch_bilty_gr_info(sb, transport_gstin, from_date, to_date, city_ids)
-    sbs_rows   = _fetch_sbs_gr_info(sb, transport_gstin, from_date, to_date_excl, city_ids)
+    # Fetch bilties from both tables.
+    # bilty table uses to_city_id (UUID FK) — needs city_ids.
+    # station_bilty_summary uses city_id (UUID FK) OR station (city code) — needs both.
+    bilty_rows = _fetch_bilty_gr_info(sb, transport_gstin, from_date, to_date, city_ids) if city_ids else []
+    sbs_rows   = _fetch_sbs_gr_info(sb, transport_gstin, from_date, to_date_excl, city_ids, city_codes)
 
     seen: set[str] = set()
     gr_info: dict[str, dict] = {}
@@ -304,6 +325,7 @@ def bulk_update_kaat_rate(
         "transport_gstin": transport_gstin.upper(),
         "station_name": station_name,
         "city_ids_matched": city_ids,
+        "city_codes_matched": city_codes,
         "from_date": from_date,
         "to_date": to_date,
         "new_kaat_rate": new_kaat_rate,

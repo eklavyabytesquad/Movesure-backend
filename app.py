@@ -1099,10 +1099,28 @@ async def transport_bilty_report(
             status_code=400,
         )
     try:
+        log.info(f"[TRANSPORT REPORT] Fetching bilties for transport_gstin={transport_gstin}, transport_name={transport_name}, from={from_date}, to={to_date}")
         result = await _run(
             get_transport_bilty_report,
             transport_gstin, transport_name, from_date, to_date,
         )
+        import json
+        # Log summary
+        summary = result.get("summary", {})
+        log.info(f"[TRANSPORT REPORT] Total bilties found: {summary.get('total')}, with_pohonch: {summary.get('with_pohonch')}, without_pohonch: {summary.get('without_pohonch')}")
+
+        # Log sample bilty with content field
+        sample_bilty = None
+        with_p = result.get("with_pohonch", {})
+        if with_p:
+            for pohonch, groups in with_p.items():
+                if groups.get("regular"):
+                    sample_bilty = groups["regular"][0]
+                    break
+
+        if sample_bilty:
+            log.info(f"[TRANSPORT REPORT] Sample bilty with content: gr_no={sample_bilty.get('gr_no')}, content={sample_bilty.get('contain')}, kaat={sample_bilty.get('kaat')}, payment_mode={sample_bilty.get('payment_mode')}")
+
         return _response(result)
     except Exception as e:
         log.exception("Error in transport_bilty_report: %s", e)
