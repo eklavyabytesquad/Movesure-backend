@@ -339,7 +339,145 @@ def bulk_update_kaat_rate(
 
 
 # ---------------------------------------------------------------------------
-# 2. Update a single GR
+# 2. Bulk update kaat by explicit GR list
+# ---------------------------------------------------------------------------
+
+def bulk_update_kaat_by_gr_nos(
+    gr_nos: list[str],
+    new_kaat_rate: float,
+    new_kaat_dd: Optional[float] = None,
+) -> dict:
+    """
+    Update kaat for an explicit list of GR numbers.
+    Fetches weight/total/payment_mode from bilty or station_bilty_summary,
+    recalculates kaat = weight * new_kaat_rate, pf = total - kaat - dd,
+    then writes to bilty_wise_kaat and syncs pohonch.bilty_metadata.
+
+    Returns a summary with per-GR details.
+    """
+    if not gr_nos:
+        return {"status": "error", "message": "gr_nos list is required", "status_code": 400}
+    if new_kaat_rate < 0:
+        return {"status": "error", "message": "new_kaat_rate must be >= 0", "status_code": 400}
+
+    # Deduplicate preserving order
+    seen_input: set[str] = set()
+    unique_gr_nos = [g for g in gr_nos if g and not seen_input.add(g)]  # type: ignore[func-returns-value]
+
+    sb = get_supabase()
+
+    # ── 1. Fetch weight, total, payment_mode from bilty table ─────────────
+    gr_info: dict[str, dict] = {}
+    for chunk in _chunks(unique_gr_nos, PAGE_SIZE):
+        res = (
+            sb.table("bilty")
+            .select("gr_no, wt, total, payment_mode")
+            .eq("is_active", True)
+            .in_("gr_no", chunk)
+            .execute()
+        )
+        for r in (res.data or []):
+            gr = r["gr_no"]
+            if gr not in gr_info:
+                gr_info[gr] = {
+                    "wt": r.get("wt") or 0,
+                    "total": r.get("total") or 0,
+                    "payment_mode": r.get("payment_mode") or "to-pay",
+                }
+
+    # ── 2. Fallback to station_bilty_summary for missing GRs ──────────────
+    missing = [g for g in unique_gr_nos if g not in gr_info]
+    if missing:
+        for chunk in _chunks(missing, PAGE_SIZE):
+            res = (
+                sb.table("station_bilty_summary")
+                .select("gr_no, weight, amount, payment_status")
+                .in_("gr_no", chunk)
+                .execute()
+            )
+            for r in (res.data or []):
+                gr = r["gr_no"]
+                if gr not in gr_info:
+                    gr_info[gr] = {
+                        "wt": r.get("weight") or 0,
+                        "total": r.get("amount") or 0,
+                        "payment_mode": r.get("payment_status") or "to-pay",
+                    }
+
+    # GRs not found in either table
+    not_found = [g for g in unique_gr_nos if g not in gr_info]
+
+    # ── 3. Fetch existing dd_chrg so pf stays correct when dd not supplied ─
+    existing_dd: dict[str, float] = {}
+    for chunk in _chunks(unique_gr_nos, PAGE_SIZE):
+        dd_rows = (
+            sb.table("bilty_wise_kaat")
+            .select("gr_no, dd_chrg")
+            .in_("gr_no", chunk)
+            .execute()
+        )
+        for r in (dd_rows.data or []):
+            existing_dd[r["gr_no"]] = r.get("dd_chrg") or 0
+
+    # ── 4. Recalculate and update bilty_wise_kaat ─────────────────────────
+    updated = []
+    not_in_kaat = []
+
+    for gr_no in unique_gr_nos:
+        if gr_no not in gr_info:
+            continue
+        info         = gr_info[gr_no]
+        wt           = info["wt"]
+        total        = info["total"]
+        payment_mode = info["payment_mode"]
+        dd           = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
+        kaat         = round(wt * new_kaat_rate, 2)
+        raw_pf       = round(total - kaat - dd, 2)
+        pf           = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
+
+        payload: dict = {"actual_kaat_rate": new_kaat_rate, "kaat": kaat, "pf": pf}
+        if new_kaat_dd is not None:
+            payload["dd_chrg"] = new_kaat_dd
+
+        res = (
+            sb.table("bilty_wise_kaat")
+            .update(payload)
+            .eq("gr_no", gr_no)
+            .execute()
+        )
+        if res.data:
+            updated.append({
+                "gr_no": gr_no,
+                "wt": wt,
+                "total": total,
+                "kaat_rate": new_kaat_rate,
+                "kaat": kaat,
+                "pf": pf,
+                "kaat_dd": dd,
+            })
+        else:
+            not_in_kaat.append(gr_no)
+
+    # ── 5. Sync updated values into pohonch bilty_metadata ────────────────
+    pohonch_touched = _sync_pohonch_metadata(sb, updated)
+
+    return {
+        "status": "success",
+        "new_kaat_rate": new_kaat_rate,
+        **({"new_kaat_dd": new_kaat_dd} if new_kaat_dd is not None else {}),
+        "requested_count": len(unique_gr_nos),
+        "updated_count": len(updated),
+        "skipped_count": len(not_in_kaat),
+        "not_found_count": len(not_found),
+        "skipped_gr_nos": not_in_kaat,
+        "not_found_gr_nos": not_found,
+        "pohonch_rows_synced": pohonch_touched,
+        "updated": updated,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Update a single GR
 # ---------------------------------------------------------------------------
 
 def update_single_gr_kaat(

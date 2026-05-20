@@ -59,7 +59,7 @@ from services.bilty.master_data_service import (
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
-from services.kaat.kaat_update_service import bulk_update_kaat_rate, update_single_gr_kaat
+from services.kaat.kaat_update_service import bulk_update_kaat_rate, bulk_update_kaat_by_gr_nos, update_single_gr_kaat
 from services.kaat.kaat_bill_report_service import get_kaat_bill_report
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
@@ -1170,6 +1170,38 @@ async def kaat_bulk_update(body: BulkKaatUpdateRequest):
         return _response(result)
     except Exception as e:
         log.exception("Error in kaat_bulk_update: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+class BulkKaatUpdateByGrRequest(BaseModel):
+    gr_nos: list[str]
+    new_kaat_rate: float
+    new_kaat_dd: Optional[float] = None
+
+
+@app.post("/api/kaat/bulk-update-by-grs")
+async def kaat_bulk_update_by_grs(body: BulkKaatUpdateByGrRequest):
+    """
+    Bulk update kaat for an explicit list of GR numbers.
+
+    Body:
+      gr_nos        — list of GR numbers to update (bilty or station type)
+      new_kaat_rate — new rate; kaat = weight * new_kaat_rate
+      new_kaat_dd   — optional; updates dd_chrg on each bilty
+
+    For each GR, weight/total are fetched from bilty or station_bilty_summary.
+    kaat = weight * new_kaat_rate
+    pf   = total - kaat - dd
+    Both bilty_wise_kaat and pohonch.bilty_metadata are updated.
+    """
+    try:
+        result = await _run(
+            bulk_update_kaat_by_gr_nos,
+            body.gr_nos, body.new_kaat_rate, body.new_kaat_dd,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_bulk_update_by_grs: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
