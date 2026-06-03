@@ -77,7 +77,10 @@ from services.challan.transit_service import (
 from services.challan.truck_trip_service import (
     list_trips, get_trip, create_trip, update_trip, delete_trip,
     dispatch_trip, receive_trip, link_challans, unlink_challan,
+    create_trip_with_challans, add_challan_to_trip, get_trip_init,
 )
+from services.staff_service import list_staff, get_staff_member, create_staff, update_staff, deactivate_staff
+from services.truck_service import list_trucks, get_truck
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -1072,6 +1075,133 @@ async def truck_trip_link_challans(request: Request, trip_id: str = Path(...)):
 async def truck_trip_unlink_challan(trip_id: str = Path(...), challan_id: str = Path(...)):
     try:
         result = await _run(unlink_challan, trip_id, challan_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/{trip_id}/add-challan/{challan_id}")
+async def truck_trip_add_single_challan(
+    request: Request,
+    trip_id: str = Path(...),
+    challan_id: str = Path(...),
+):
+    """Add one specific challan to an existing trip."""
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(add_challan_to_trip, trip_id, challan_id, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/create-with-challans")
+async def truck_trip_create_with_challans(request: Request):
+    """
+    Atomic: create a trip and link challans in a single request.
+    Body: { truck_id, created_by, driver_id?, owner_id?, branch_id?, remarks?, challan_ids[] }
+    """
+    try:
+        data = await request.json()
+        result = await _run(create_trip_with_challans, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/truck-trips/init")
+async def truck_trip_init(branch_id: str = Query(None)):
+    """
+    Modal page-load: returns trucks, staff, and unlinked challans in one call.
+    Optional branch_id filters challans to that branch.
+    """
+    try:
+        result = await _run(get_trip_init, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Staff ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/staff")
+async def staff_list(
+    post:        str  = Query(None),
+    active_only: bool = Query(True),
+    search:      str  = Query(None),
+    page:        int  = Query(1),
+    page_size:   int  = Query(100),
+):
+    try:
+        result = await _run(list_staff, post, active_only, search, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/staff/{staff_id}")
+async def staff_get(staff_id: str = Path(...)):
+    try:
+        result = await _run(get_staff_member, staff_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/staff")
+async def staff_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_staff, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/staff/{staff_id}")
+async def staff_update(request: Request, staff_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_staff, staff_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/staff/{staff_id}")
+async def staff_deactivate(staff_id: str = Path(...)):
+    try:
+        result = await _run(deactivate_staff, staff_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Trucks ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/trucks")
+async def trucks_list(
+    active_only:    bool = Query(True),
+    available_only: bool = Query(False),
+    search:         str  = Query(None),
+    page:           int  = Query(1),
+    page_size:      int  = Query(100),
+):
+    try:
+        result = await _run(list_trucks, active_only, available_only, search, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/trucks/{truck_id}")
+async def truck_get(truck_id: str = Path(...)):
+    try:
+        result = await _run(get_truck, truck_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

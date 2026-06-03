@@ -394,3 +394,97 @@ def delete_trip(trip_id: str) -> dict:
         return {"status": "success", "message": "Trip deleted and challans unlinked"}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── ATOMIC: CREATE TRIP + LINK CHALLANS IN ONE CALL ──────────────────────────
+
+def create_trip_with_challans(data: dict) -> dict:
+    """
+    Atomically create a trip and link challans to it.
+    Required: truck_id, created_by
+    Optional: driver_id, owner_id, branch_id, remarks
+              challan_ids list[uuid]
+    Returns the full trip with challans list.
+    """
+    result = create_trip(data)
+    if result.get("status") != "success":
+        return result
+
+    trip_id = result["data"]["id"]
+    challan_ids = data.get("challan_ids") or []
+
+    link_result = None
+    if challan_ids:
+        link_result = _link_challans(get_supabase(), trip_id, challan_ids)
+
+    # Return full trip with challans
+    full = get_trip(trip_id)
+    if link_result:
+        full["link_summary"] = {
+            "newly_linked":             link_result.get("newly_linked", []),
+            "already_in_another_trip":  link_result.get("already_in_another_trip", []),
+            "not_found":                link_result.get("not_found", []),
+        }
+    return full
+
+
+# ── ADD A SINGLE CHALLAN TO A TRIP ───────────────────────────────────────────
+
+def add_challan_to_trip(trip_id: str, challan_id: str, user_id: str = None) -> dict:
+    """
+    Link one specific challan to a trip.
+    Convenience wrapper around link_challans for single-item use.
+    """
+    return link_challans(trip_id, [challan_id], user_id)
+
+
+# ── TRIP INIT (modal page-load) ───────────────────────────────────────────────
+
+def get_trip_init(branch_id: str = None) -> dict:
+    """
+    Single endpoint for the Create/Edit Trip modal.
+    Returns trucks (active), staff (active), and undispatched challans.
+    Optional branch_id filters challans to that branch.
+    """
+    try:
+        sb = get_supabase()
+
+        # Trucks
+        trucks_resp = sb.table("trucks").select(
+            "id, truck_number, truck_type, is_available, current_location"
+        ).eq("is_active", True).order("truck_number").execute()
+
+        # Staff (drivers + owners — all active)
+        staff_resp = sb.table("staff").select(
+            "id, name, post, mobile_number, license_number"
+        ).eq("is_active", True).order("name").execute()
+
+        # Undispatched challans (no truck_trip_id yet, or branch filter)
+        challan_q = (
+            sb.table("challan_details")
+            .select("id, challan_no, date, branch_id, truck_id, total_bilty_count, "
+                    "is_dispatched, truck_trip_id")
+            .eq("is_active", True)
+            .is_("truck_trip_id", "null")
+            .order("date", desc=True)
+        )
+        if branch_id:
+            challan_q = challan_q.eq("branch_id", branch_id)
+        challans_resp = challan_q.execute()
+
+        staff = staff_resp.data or []
+        drivers = [s for s in staff if "driver" in s.get("post", "").lower()]
+        owners  = [s for s in staff if s.get("post", "").lower() not in ("driver",)]
+
+        return {
+            "status": "success",
+            "data": {
+                "trucks":   trucks_resp.data or [],
+                "staff":    staff,
+                "drivers":  drivers,
+                "owners":   owners,
+                "challans": challans_resp.data or [],
+            },
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
