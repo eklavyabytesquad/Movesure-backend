@@ -38,7 +38,7 @@ from services.ewaybill.extend_ewaybill_service import extend_ewaybill_validity
 from services.ewaybill.distance_service import get_distance
 from services.ewaybill.gstin_details_service import get_gstin_details
 from services.ewaybill.transporter_details_service import get_transporter_details
-from services.ewaybill.generate_ewaybill_service import generate_ewaybill
+from services.ewaybill.generate_ewaybill_service import generate_ewaybill, generate_delivery_challan_ewaybill
 from services.bilty.reference_data_service import get_reference_data
 from services.bilty.bilty_save_service import save_bilty, get_bilty_with_cities
 from services.bilty.payment_tracking_service import (
@@ -73,6 +73,10 @@ from services.challan.transit_service import (
     get_available_bilties, get_transit_bilties, add_to_transit,
     remove_from_transit, bulk_remove_from_transit,
     bulk_update_delivery_status, get_challan_stats,
+)
+from services.challan.truck_trip_service import (
+    list_trips, get_trip, create_trip, update_trip, delete_trip,
+    dispatch_trip, receive_trip, link_challans, unlink_challan,
 )
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
@@ -439,6 +443,27 @@ async def generate_ewaybill_endpoint(request: Request):
         return _response(result)
     except Exception as e:
         log.exception("Error in generate_ewaybill: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/generate-delivery-challan")
+async def generate_delivery_challan_endpoint(request: Request):
+    """
+    Generate a Delivery Challan EWB with pre-set defaults:
+      document_type        = Delivery Challan
+      sub_supply_type      = Others
+      sub_supply_description = auto-generated from document_number
+
+    Caller only needs to supply parties, amounts, items, and transport fields.
+    """
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse(content={"status": "error", "message": "No data provided"}, status_code=400)
+        result = await _run(generate_delivery_challan_ewaybill, data)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in generate_delivery_challan: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -951,6 +976,102 @@ async def transit_delivery_status(request: Request):
     try:
         data = await request.json()
         result = await _run(bulk_update_delivery_status, data.get("updates", []), data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Truck Trips ──────────────────────────────────────────────────────────────
+
+@app.get("/api/truck-trips")
+async def truck_trips_list(
+    branch_id: str = Query(None),
+    truck_id:  str = Query(None),
+    status:    str = Query(None),
+    page:      int = Query(1),
+    page_size: int = Query(40),
+    search:    str = Query(None),
+):
+    try:
+        result = await _run(list_trips, branch_id, truck_id, status, page, page_size, search)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips")
+async def truck_trip_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_trip, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/truck-trips/{trip_id}")
+async def truck_trip_get(trip_id: str = Path(...)):
+    try:
+        result = await _run(get_trip, trip_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/truck-trips/{trip_id}")
+async def truck_trip_update(request: Request, trip_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_trip, trip_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/truck-trips/{trip_id}")
+async def truck_trip_delete(trip_id: str = Path(...)):
+    try:
+        result = await _run(delete_trip, trip_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/{trip_id}/dispatch")
+async def truck_trip_dispatch(request: Request, trip_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(dispatch_trip, trip_id, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/{trip_id}/receive")
+async def truck_trip_receive(request: Request, trip_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(receive_trip, trip_id, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/{trip_id}/link-challans")
+async def truck_trip_link_challans(request: Request, trip_id: str = Path(...)):
+    try:
+        data = await request.json()
+        challan_ids = data.get("challan_ids", [])
+        result = await _run(link_challans, trip_id, challan_ids, data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/{trip_id}/unlink-challan/{challan_id}")
+async def truck_trip_unlink_challan(trip_id: str = Path(...), challan_id: str = Path(...)):
+    try:
+        result = await _run(unlink_challan, trip_id, challan_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
