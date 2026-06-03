@@ -252,7 +252,13 @@ SKIP_AUTH_PATHS = {"/api/health", "/api/refresh-token", "/docs", "/openapi.json"
 @app.middleware("http")
 async def ensure_valid_token(request: Request, call_next):
     path = request.url.path
-    if path in SKIP_AUTH_PATHS or path.startswith("/api/bilty") or path.startswith("/api/station-bilty") or path.startswith("/api/challan"):
+    if (path in SKIP_AUTH_PATHS
+            or path.startswith("/api/bilty")
+            or path.startswith("/api/station-bilty")
+            or path.startswith("/api/challan")
+            or path.startswith("/api/truck-trips")
+            or path.startswith("/api/staff")
+            or path.startswith("/api/trucks")):
         return await call_next(request)
 
     log.info("Token check: %s %s", request.method, path)
@@ -984,7 +990,28 @@ async def transit_delivery_status(request: Request):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
-# ── Truck Trips ──────────────────────────────────────────────────────────────
+# ── Truck Trips  (static routes FIRST, then /{trip_id} dynamic routes) ───────
+
+@app.get("/api/truck-trips/init")
+async def truck_trip_init(branch_id: str = Query(None)):
+    """Modal page-load: trucks + staff + unlinked challans in one call."""
+    try:
+        result = await _run(get_trip_init, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/truck-trips/create-with-challans")
+async def truck_trip_create_with_challans(request: Request):
+    """Atomic: create a trip and link challans in a single request."""
+    try:
+        data = await request.json()
+        result = await _run(create_trip_with_challans, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
 
 @app.get("/api/truck-trips")
 async def truck_trips_list(
@@ -1094,33 +1121,6 @@ async def truck_trip_add_single_challan(
         except Exception:
             pass
         result = await _run(add_challan_to_trip, trip_id, challan_id, data.get("user_id"))
-        return _response(result)
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.post("/api/truck-trips/create-with-challans")
-async def truck_trip_create_with_challans(request: Request):
-    """
-    Atomic: create a trip and link challans in a single request.
-    Body: { truck_id, created_by, driver_id?, owner_id?, branch_id?, remarks?, challan_ids[] }
-    """
-    try:
-        data = await request.json()
-        result = await _run(create_trip_with_challans, data)
-        return _response(result)
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.get("/api/truck-trips/init")
-async def truck_trip_init(branch_id: str = Query(None)):
-    """
-    Modal page-load: returns trucks, staff, and unlinked challans in one call.
-    Optional branch_id filters challans to that branch.
-    """
-    try:
-        result = await _run(get_trip_init, branch_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
