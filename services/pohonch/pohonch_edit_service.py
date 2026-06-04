@@ -122,10 +122,12 @@ def _enrich_gr_items(sb, gr_items: list[dict], challan_nos: list[str]) -> tuple[
         pkgs         = int(b.get("no_of_pkg") or 0)
         rate         = _safe_float(k.get("actual_kaat_rate"))
         payment_mode = str(b.get("payment_mode") or "").strip().lower()
-        if kaat_val:
-            pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+        if payment_mode == "paid":
+            pf_val = round(-kaat_val, 2)                             # -kaat (0 when kaat=0)
+        elif kaat_val:
+            pf_val = round(amt - kaat_val - dd_val, 2)              # to-pay: freight-kaat-dd
         else:
-            pf_val = round(pf_raw, 2)
+            pf_val = round(pf_raw, 2)                               # no kaat stored — keep as-is
 
         gr_challan = (
             challan_override.get(gr)
@@ -581,10 +583,12 @@ def recalculate_pohonch(
         dd_val       = _safe_float(k.get("dd_chrg"))
         rate         = _safe_float(k.get("actual_kaat_rate"))
         payment_mode = str(b.get("payment_mode") or "").strip().lower()
-        if kaat_val:
-            pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+        if payment_mode == "paid":
+            pf_val = round(-kaat_val, 2)                             # -kaat (0 when kaat=0)
+        elif kaat_val:
+            pf_val = round(amt - kaat_val - dd_val, 2)              # to-pay: freight-kaat-dd
         else:
-            pf_val = round(pf_raw, 2)
+            pf_val = round(pf_raw, 2)                               # no kaat stored — keep as-is
 
         new_entry = {
             # Preserve manual / non-DB fields
@@ -611,6 +615,10 @@ def recalculate_pohonch(
         }
         new_meta.append(new_entry)
 
+        # Also fix bilty_wise_kaat.pf if it differs from the correct value
+        if kaat_val and abs(pf_val - pf_raw) > 0.01:
+            sb.table("bilty_wise_kaat").update({"pf": pf_val}).eq("gr_no", gr).execute()
+
     new_totals = _recalculate_totals(new_meta)
 
     update_payload = {
@@ -627,7 +635,7 @@ def recalculate_pohonch(
 
     return {
         "status": "success",
-        "message": f"Pohonch {row['pohonch_number']} recalculated from live data",
+        "message": f"Pohonch {row['pohonch_number']} recalculated — bilty_wise_kaat.pf corrected where needed",
         "pohonch_number": row["pohonch_number"],
         "old_totals": old_totals,
         "new_totals": new_totals,
@@ -840,6 +848,10 @@ def bulk_recalculate_pohonch(
                 "payment_mode":     b.get("payment_mode", ""),
                 "delivery_type":    b.get("delivery_type", ""),
             })
+
+            # Fix bilty_wise_kaat.pf if the stored value differs from the correct one
+            if kaat_val and abs(pf_val - pf_raw) > 0.01:
+                sb.table("bilty_wise_kaat").update({"pf": pf_val}).eq("gr_no", gr).execute()
 
         new_totals = _recalculate_totals(new_meta)
         update_payload = {

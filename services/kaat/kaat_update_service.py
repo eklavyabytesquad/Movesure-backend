@@ -287,8 +287,8 @@ def bulk_update_kaat_rate(
         dd    = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
         kaat  = round(wt * new_kaat_rate, 2)
         # paid bilties: pf is negative (transport owes the consignor)
-        # paid: transport already collected freight at source, so pf = -kaat only
-        # to-pay/foc: transport collects at destination, keeps freight-kaat-dd
+        # paid: pf = -kaat (even when kaat=0 → pf=0)
+        # to-pay/foc: pf = freight - kaat - dd
         pf = round(-kaat, 2) if payment_mode == "paid" else round(total - kaat - dd, 2)
 
         payload: dict = {
