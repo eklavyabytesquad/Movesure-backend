@@ -91,7 +91,9 @@ from services.pohonch.pohonch_service import (
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
 )
 from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items
-from services.pohonch.pohonch_edit_service import edit_pohonch
+from services.pohonch.pohonch_edit_service import (
+    edit_pohonch, update_gr_fields, recalculate_pohonch, bulk_recalculate_pohonch,
+)
 
 
 @asynccontextmanager
@@ -1919,6 +1921,112 @@ async def pohonch_edit(request: Request, pohonch_id: str = Path(...)):
         return _response(result)
     except Exception as e:
         log.exception("Error in pohonch_edit: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.patch("/api/pohonch/{pohonch_id}/gr/{gr_no}")
+async def pohonch_update_gr(
+    request: Request,
+    pohonch_id: str = Path(...),
+    gr_no: str = Path(...),
+):
+    """
+    Patch any field(s) on a single GR entry inside pohonch.bilty_metadata.
+    Recalculates pohonch totals after the update.
+
+    Body (send only fields you want to change):
+    {
+      "destination":   "LUCKNOW",
+      "kaat":          150.0,
+      "pf":            350.0,
+      "dd":            0,
+      "kaat_rate":     2.5,
+      "weight":        60.0,
+      "packages":      3,
+      "amount":        500.0,
+      "pohonch_bilty": "12345",
+      "e_way_bill":    "3312XXXXXXX",
+      "is_paid":       false,
+      "payment_mode":  "to-pay",
+      "delivery_type": "godown",
+      "user_id":       "uuid",
+      "force":         false
+    }
+    """
+    try:
+        data = await request.json()
+        user_id = data.pop("user_id", None)
+        force   = bool(data.pop("force", False))
+        result = await _run(update_gr_fields, pohonch_id, gr_no, data, user_id, force)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in pohonch_update_gr: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/pohonch/bulk-recalculate")
+async def pohonch_bulk_recalculate(request: Request):
+    """
+    Recalculate multiple pohonch in one call — re-fetches live data from
+    bilty, bilty_wise_kaat, station_bilty_summary, and cities tables.
+
+    Body (supply ONE selector):
+    {
+      "pohonch_ids":      ["uuid1", "uuid2"],
+      "pohonch_numbers":  ["NIE0001", "NIE0002"],
+      "transport_gstin":  "09XXXXX",
+      "transport_name":   "NEW INDIA EXPRESS",
+      "user_id": "uuid",
+      "force": false
+    }
+    """
+    try:
+        data = await request.json()
+        result = await _run(
+            bulk_recalculate_pohonch,
+            data.get("pohonch_ids"),
+            data.get("pohonch_numbers"),
+            data.get("transport_gstin"),
+            data.get("transport_name"),
+            data.get("user_id"),
+            bool(data.get("force", False)),
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in pohonch_bulk_recalculate: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/pohonch/{pohonch_id}/recalculate")
+async def pohonch_recalculate(request: Request, pohonch_id: str = Path(...)):
+    """
+    Re-fetch live data for every GR in this pohonch from bilty,
+    bilty_wise_kaat, station_bilty_summary and cities tables, then
+    rebuild bilty_metadata and recalculate all totals.
+
+    Use this after:
+      - Updating kaat rate via /api/kaat/* endpoints
+      - Changing weight or freight on a bilty
+      - Correcting a destination city
+
+    Body:
+    { "user_id": "uuid", "force": false }
+    """
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(
+            recalculate_pohonch,
+            pohonch_id,
+            data.get("user_id"),
+            bool(data.get("force", False)),
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in pohonch_recalculate: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
