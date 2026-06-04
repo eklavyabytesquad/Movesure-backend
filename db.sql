@@ -341,12 +341,14 @@ CREATE TABLE public.challan_details (
   is_received_at_hub boolean DEFAULT false,
   received_at_hub_timing timestamp with time zone,
   received_by_user uuid,
+  truck_trip_id uuid,
   CONSTRAINT challan_details_pkey PRIMARY KEY (id),
   CONSTRAINT challan_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
   CONSTRAINT challan_details_truck_id_fkey FOREIGN KEY (truck_id) REFERENCES public.trucks(id),
   CONSTRAINT challan_details_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.staff(id),
   CONSTRAINT challan_details_driver_id_fkey FOREIGN KEY (driver_id) REFERENCES public.staff(id),
-  CONSTRAINT challan_details_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+  CONSTRAINT challan_details_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id)
 );
 CREATE TABLE public.station_bilty_summary (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -678,6 +680,7 @@ CREATE TABLE public.bilty_wise_kaat (
   pohonch_no character varying,
   bilty_number character varying,
   transport_id uuid,
+  crossing_challan_no character varying,
   CONSTRAINT bilty_wise_kaat_pkey PRIMARY KEY (id),
   CONSTRAINT bilty_wise_kaat_transport_id_fkey FOREIGN KEY (transport_id) REFERENCES public.transports(id)
 );
@@ -1095,4 +1098,29 @@ CREATE TABLE public.pod_details (
   rs_chrg numeric DEFAULT 50,
   labour_chrg numeric DEFAULT 0,
   CONSTRAINT pod_details_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.truck_trips (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  trip_no character varying NOT NULL UNIQUE,
+  truck_id uuid NOT NULL,
+  driver_id uuid,
+  owner_id uuid,
+  branch_id uuid,
+  dispatch_date timestamp with time zone,
+  received_date timestamp with time zone,
+  received_by uuid,
+  status character varying NOT NULL DEFAULT 'pending'::character varying CHECK (status::text = ANY (ARRAY['pending'::character varying, 'dispatched'::character varying, 'received'::character varying]::text[])),
+  total_challan_count integer DEFAULT 0,
+  remarks text,
+  created_by uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+  is_active boolean DEFAULT true,
+  CONSTRAINT truck_trips_pkey PRIMARY KEY (id),
+  CONSTRAINT truck_trips_truck_id_fkey FOREIGN KEY (truck_id) REFERENCES public.trucks(id),
+  CONSTRAINT truck_trips_driver_id_fkey FOREIGN KEY (driver_id) REFERENCES public.staff(id),
+  CONSTRAINT truck_trips_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.staff(id),
+  CONSTRAINT truck_trips_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
+  CONSTRAINT truck_trips_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
+  CONSTRAINT truck_trips_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
 );

@@ -81,6 +81,11 @@ from services.challan.truck_trip_service import (
 )
 from services.staff_service import list_staff, get_staff_member, create_staff, update_staff, deactivate_staff
 from services.truck_service import list_trucks, get_truck
+from services.crossing_bill.crossing_bill_service import (
+    get_unbilled_pohonch, create_crossing_bill, add_transaction,
+    update_bill, list_crossing_bills, get_crossing_bill,
+    remove_pohonch_from_bill, cancel_crossing_bill,
+)
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -258,7 +263,8 @@ async def ensure_valid_token(request: Request, call_next):
             or path.startswith("/api/challan")
             or path.startswith("/api/truck-trips")
             or path.startswith("/api/staff")
-            or path.startswith("/api/trucks")):
+            or path.startswith("/api/trucks")
+            or path.startswith("/api/crossing-bill")):
         return await call_next(request)
 
     log.info("Token check: %s %s", request.method, path)
@@ -1202,6 +1208,113 @@ async def trucks_list(
 async def truck_get(truck_id: str = Path(...)):
     try:
         result = await _run(get_truck, truck_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Crossing Bill (static routes first, then /{bill_id}) ─────────────────────
+
+@app.get("/api/crossing-bill/pohonch")
+async def crossing_bill_pohonch(
+    transport_gstin: str = Query(None),
+    transport_name:  str = Query(None),
+    transport_id:    str = Query(None),
+    from_date:       str = Query(None),
+    to_date:         str = Query(None),
+):
+    """Return unbilled pohonch eligible for a new crossing bill."""
+    try:
+        result = await _run(get_unbilled_pohonch, transport_gstin, transport_name, transport_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/crossing-bill")
+async def crossing_bill_list(
+    transport_gstin: str = Query(None),
+    transport_id:    str = Query(None),
+    status:          str = Query(None),
+    bill_month:      int = Query(None),
+    bill_year:       int = Query(None),
+    page:            int = Query(1),
+    page_size:       int = Query(40),
+):
+    try:
+        result = await _run(list_crossing_bills, transport_gstin, transport_id, status, bill_month, bill_year, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill")
+async def crossing_bill_create(request: Request):
+    """Create a crossing bill from selected pohonch numbers."""
+    try:
+        data = await request.json()
+        result = await _run(create_crossing_bill, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/crossing-bill/{bill_id}")
+async def crossing_bill_get(bill_id: str = Path(...)):
+    try:
+        result = await _run(get_crossing_bill, bill_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/crossing-bill/{bill_id}")
+async def crossing_bill_update(request: Request, bill_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_bill, bill_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill/{bill_id}/transaction")
+async def crossing_bill_add_transaction(request: Request, bill_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(add_transaction, bill_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill/{bill_id}/remove-pohonch/{pohonch_number}")
+async def crossing_bill_remove_pohonch(
+    request: Request,
+    bill_id: str = Path(...),
+    pohonch_number: str = Path(...),
+):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(remove_pohonch_from_bill, bill_id, pohonch_number, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill/{bill_id}/cancel")
+async def crossing_bill_cancel(request: Request, bill_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(cancel_crossing_bill, bill_id, data.get("updated_by"))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

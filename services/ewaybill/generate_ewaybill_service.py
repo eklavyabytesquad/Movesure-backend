@@ -228,6 +228,53 @@ def normalize_payload(data):
     if data.get('document_type') == 'Others':
         data.setdefault('sub_supply_description', '')
 
+    # ── Numeric field coercion ───────────────────────────────────────────────
+    # NIC/MastersIndia does numeric comparisons (e.g. value > 0) on these fields.
+    # Any null/None/string causes "'>' not supported between NoneType and int".
+    # Coerce every header-level numeric field to the correct Python type.
+
+    _int_fields = [
+        'transportation_distance', 'pincode_of_consignor', 'pincode_of_consignee',
+        'transaction_type', 'generate_status',
+    ]
+    for f in _int_fields:
+        if f in data:
+            try:
+                data[f] = int(data[f]) if data[f] is not None else 0
+            except (ValueError, TypeError):
+                data[f] = 0
+
+    _float_fields = [
+        'taxable_amount', 'cgst_amount', 'sgst_amount', 'igst_amount',
+        'cess_amount', 'cess_nonadvol_value', 'other_value', 'total_invoice_value',
+    ]
+    for f in _float_fields:
+        if f in data:
+            try:
+                data[f] = float(data[f]) if data[f] is not None else 0.0
+            except (ValueError, TypeError):
+                data[f] = 0.0
+
+    # ── Item-level numeric coercion ──────────────────────────────────────────
+    for item in data.get('itemList', []):
+        for f in ('cgst_rate', 'sgst_rate', 'igst_rate', 'cess_rate', 'cessNonAdvol',
+                  'taxable_amount', 'quantity'):
+            if f in item:
+                try:
+                    item[f] = float(item[f]) if item[f] is not None else 0.0
+                except (ValueError, TypeError):
+                    item[f] = 0.0
+        # hsn_code must be int
+        if 'hsn_code' in item:
+            try:
+                item['hsn_code'] = int(str(item['hsn_code']).strip())
+            except (ValueError, TypeError):
+                pass
+
+    # sub_supply_description: always send as string, never null
+    if 'sub_supply_description' not in data or data['sub_supply_description'] is None:
+        data['sub_supply_description'] = ''
+
     return data
 
 
