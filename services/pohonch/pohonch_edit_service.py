@@ -114,14 +114,18 @@ def _enrich_gr_items(sb, gr_items: list[dict], challan_nos: list[str]) -> tuple[
         if not b:
             unmatched.append(gr)
 
-        kaat_val = _safe_float(k.get("kaat"))
-        pf_raw   = _safe_float(k.get("pf"))
-        dd_val   = _safe_float(k.get("dd_chrg"))
-        amt      = _safe_float(b.get("freight_amount"))
-        wt       = _safe_float(b.get("wt"))
-        pkgs     = int(b.get("no_of_pkg") or 0)
-        rate     = _safe_float(k.get("actual_kaat_rate"))
-        pf_val   = round(amt - kaat_val, 2) if amt and kaat_val else round(pf_raw, 2)
+        kaat_val     = _safe_float(k.get("kaat"))
+        pf_raw       = _safe_float(k.get("pf"))
+        dd_val       = _safe_float(k.get("dd_chrg"))
+        amt          = _safe_float(b.get("freight_amount"))
+        wt           = _safe_float(b.get("wt"))
+        pkgs         = int(b.get("no_of_pkg") or 0)
+        rate         = _safe_float(k.get("actual_kaat_rate"))
+        payment_mode = str(b.get("payment_mode") or "").strip().lower()
+        if kaat_val:
+            pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+        else:
+            pf_val = round(pf_raw, 2)
 
         gr_challan = (
             challan_override.get(gr)
@@ -568,15 +572,19 @@ def recalculate_pohonch(
             not_found.append(gr)
             continue
 
-        city_info = city_map.get(b.get("to_city_id", ""), {})
-        amt      = _safe_float(b.get("freight_amount"))
-        wt       = _safe_float(b.get("wt"))
-        pkgs     = int(b.get("no_of_pkg") or 0)
-        kaat_val = _safe_float(k.get("kaat"))
-        pf_raw   = _safe_float(k.get("pf"))
-        dd_val   = _safe_float(k.get("dd_chrg"))
-        rate     = _safe_float(k.get("actual_kaat_rate"))
-        pf_val   = round(amt - kaat_val, 2) if amt and kaat_val else round(pf_raw, 2)
+        city_info    = city_map.get(b.get("to_city_id", ""), {})
+        amt          = _safe_float(b.get("freight_amount"))
+        wt           = _safe_float(b.get("wt"))
+        pkgs         = int(b.get("no_of_pkg") or 0)
+        kaat_val     = _safe_float(k.get("kaat"))
+        pf_raw       = _safe_float(k.get("pf"))
+        dd_val       = _safe_float(k.get("dd_chrg"))
+        rate         = _safe_float(k.get("actual_kaat_rate"))
+        payment_mode = str(b.get("payment_mode") or "").strip().lower()
+        if kaat_val:
+            pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+        else:
+            pf_val = round(pf_raw, 2)
 
         new_entry = {
             # Preserve manual / non-DB fields
@@ -797,15 +805,19 @@ def bulk_recalculate_pohonch(
                 not_found_grs.append(gr)
                 continue
 
-            city_info = city_map.get(b.get("to_city_id", ""), {})
-            amt      = _safe_float(b.get("freight_amount"))
-            wt       = _safe_float(b.get("wt"))
-            pkgs     = int(b.get("no_of_pkg") or 0)
-            kaat_val = _safe_float(k.get("kaat"))
-            pf_raw   = _safe_float(k.get("pf"))
-            dd_val   = _safe_float(k.get("dd_chrg"))
-            rate     = _safe_float(k.get("actual_kaat_rate"))
-            pf_val   = round(amt - kaat_val, 2) if amt and kaat_val else round(pf_raw, 2)
+            city_info    = city_map.get(b.get("to_city_id", ""), {})
+            amt          = _safe_float(b.get("freight_amount"))
+            wt           = _safe_float(b.get("wt"))
+            pkgs         = int(b.get("no_of_pkg") or 0)
+            kaat_val     = _safe_float(k.get("kaat"))
+            pf_raw       = _safe_float(k.get("pf"))
+            dd_val       = _safe_float(k.get("dd_chrg"))
+            rate         = _safe_float(k.get("actual_kaat_rate"))
+            payment_mode = str(b.get("payment_mode") or "").strip().lower()
+            if kaat_val:
+                pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+            else:
+                pf_val = round(pf_raw, 2)
 
             new_meta.append({
                 "gr_no":            gr,

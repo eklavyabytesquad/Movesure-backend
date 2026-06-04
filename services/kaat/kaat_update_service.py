@@ -287,8 +287,9 @@ def bulk_update_kaat_rate(
         dd    = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
         kaat  = round(wt * new_kaat_rate, 2)
         # paid bilties: pf is negative (transport owes the consignor)
-        raw_pf = round(total - kaat - dd, 2)
-        pf     = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
+        # paid: transport already collected freight at source, so pf = -kaat only
+        # to-pay/foc: transport collects at destination, keeps freight-kaat-dd
+        pf = round(-kaat, 2) if payment_mode == "paid" else round(total - kaat - dd, 2)
 
         payload: dict = {
             "actual_kaat_rate": new_kaat_rate,
@@ -432,8 +433,7 @@ def bulk_update_kaat_by_gr_nos(
         payment_mode = info["payment_mode"]
         dd           = new_kaat_dd if new_kaat_dd is not None else existing_dd.get(gr_no, 0)
         kaat         = round(wt * new_kaat_rate, 2)
-        raw_pf       = round(total - kaat - dd, 2)
-        pf           = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
+        pf           = round(-kaat, 2) if payment_mode == "paid" else round(total - kaat - dd, 2)
 
         payload: dict = {"actual_kaat_rate": new_kaat_rate, "kaat": kaat, "pf": pf}
         if new_kaat_dd is not None:
@@ -565,9 +565,7 @@ def update_single_gr_kaat(
     elif "kaat" in payload and total is not None:
         # use incoming kaat_dd if provided, otherwise keep existing dd_chrg
         dd_for_pf = kaat_dd if kaat_dd is not None else (current.get("dd_chrg") or 0)
-        raw_pf = round(total - new_kaat - dd_for_pf, 2)
-        # paid bilties: pf is negative (transport owes the consignor)
-        payload["pf"] = -abs(raw_pf) if payment_mode == "paid" else abs(raw_pf)
+        payload["pf"] = round(-new_kaat, 2) if payment_mode == "paid" else round(total - new_kaat - dd_for_pf, 2)
 
     if kaat_dd is not None:
         payload["dd_chrg"] = kaat_dd
