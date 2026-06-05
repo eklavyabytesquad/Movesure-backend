@@ -136,7 +136,7 @@ def create_pohonch_from_gr_items(
         res = (
             sb.table("bilty")
             .select(
-                "gr_no, bilty_date, wt, no_of_pkg, freight_amount, "
+                "gr_no, bilty_date, wt, no_of_pkg, freight_amount, total, "
                 "consignor_name, consignee_name, payment_mode, delivery_type, "
                 "e_way_bill, to_city_id"
             )
@@ -220,15 +220,20 @@ def create_pohonch_from_gr_items(
         # Determine which challan this gr belongs to
         gr_challan = k.get("challan_no", "") or (challan_nos[0] if challan_nos else "")
 
-        kaat_val = _safe_float(k.get("kaat"))
-        pf_raw   = _safe_float(k.get("pf"))
-        dd_val   = _safe_float(k.get("dd_chrg"))
-        amt      = _safe_float(b.get("freight_amount"))
-        wt       = _safe_float(b.get("wt"))
-        pkgs     = int(b.get("no_of_pkg") or 0)
-        rate     = _safe_float(k.get("actual_kaat_rate"))
+        kaat_val     = _safe_float(k.get("kaat"))
+        pf_raw       = _safe_float(k.get("pf"))
+        dd_val       = _safe_float(k.get("dd_chrg"))
+        # Use total (freight + bill_charge + labour + other) as the full bilty amount
+        amt          = _safe_float(b.get("total") or b.get("freight_amount"))
+        wt           = _safe_float(b.get("wt"))
+        pkgs         = int(b.get("no_of_pkg") or 0)
+        rate         = _safe_float(k.get("actual_kaat_rate"))
+        payment_mode = str(b.get("payment_mode") or "").strip().lower()
 
-        pf_val = round(amt - kaat_val, 2) if amt and kaat_val else round(pf_raw, 2)
+        if kaat_val:
+            pf_val = round(-kaat_val, 2) if payment_mode == "paid" else round(amt - kaat_val - dd_val, 2)
+        else:
+            pf_val = round(pf_raw, 2)
 
         bilty_items.append({
             "gr_no":            gr,

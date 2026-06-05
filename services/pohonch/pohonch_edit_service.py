@@ -38,7 +38,7 @@ def _enrich_gr_items(sb, gr_items: list[dict], challan_nos: list[str]) -> tuple[
         res = (
             sb.table("bilty")
             .select(
-                "gr_no, bilty_date, wt, no_of_pkg, freight_amount, "
+                "gr_no, bilty_date, wt, no_of_pkg, freight_amount, total, "
                 "consignor_name, consignee_name, payment_mode, delivery_type, "
                 "e_way_bill, to_city_id"
             )
@@ -117,17 +117,18 @@ def _enrich_gr_items(sb, gr_items: list[dict], challan_nos: list[str]) -> tuple[
         kaat_val     = _safe_float(k.get("kaat"))
         pf_raw       = _safe_float(k.get("pf"))
         dd_val       = _safe_float(k.get("dd_chrg"))
-        amt          = _safe_float(b.get("freight_amount"))
+        # Use total (freight + bill_charge + labour) — fallback to freight_amount
+        amt          = _safe_float(b.get("total") or b.get("freight_amount"))
         wt           = _safe_float(b.get("wt"))
         pkgs         = int(b.get("no_of_pkg") or 0)
         rate         = _safe_float(k.get("actual_kaat_rate"))
         payment_mode = str(b.get("payment_mode") or "").strip().lower()
         if payment_mode == "paid":
-            pf_val = round(-kaat_val, 2)                             # -kaat (0 when kaat=0)
+            pf_val = round(-kaat_val, 2)
         elif kaat_val:
-            pf_val = round(amt - kaat_val - dd_val, 2)              # to-pay: freight-kaat-dd
+            pf_val = round(amt - kaat_val - dd_val, 2)
         else:
-            pf_val = round(pf_raw, 2)                               # no kaat stored — keep as-is
+            pf_val = round(pf_raw, 2)
 
         gr_challan = (
             challan_override.get(gr)
@@ -495,7 +496,7 @@ def recalculate_pohonch(
     for chunk in _chunks(gr_nos, 50):
         r = (
             sb.table("bilty")
-            .select("gr_no, bilty_date, wt, no_of_pkg, freight_amount, "
+            .select("gr_no, bilty_date, wt, no_of_pkg, freight_amount, total, "
                     "consignor_name, consignee_name, payment_mode, delivery_type, "
                     "e_way_bill, to_city_id")
             .in_("gr_no", chunk)
@@ -575,7 +576,7 @@ def recalculate_pohonch(
             continue
 
         city_info    = city_map.get(b.get("to_city_id", ""), {})
-        amt          = _safe_float(b.get("freight_amount"))
+        amt          = _safe_float(b.get("total") or b.get("freight_amount"))
         wt           = _safe_float(b.get("wt"))
         pkgs         = int(b.get("no_of_pkg") or 0)
         kaat_val     = _safe_float(k.get("kaat"))
@@ -714,7 +715,7 @@ def bulk_recalculate_pohonch(
     for chunk in _chunks(all_gr_nos, 100):
         r = (
             sb.table("bilty")
-            .select("gr_no, bilty_date, wt, no_of_pkg, freight_amount, "
+            .select("gr_no, bilty_date, wt, no_of_pkg, freight_amount, total, "
                     "consignor_name, consignee_name, payment_mode, delivery_type, "
                     "e_way_bill, to_city_id")
             .in_("gr_no", chunk)
@@ -814,7 +815,7 @@ def bulk_recalculate_pohonch(
                 continue
 
             city_info    = city_map.get(b.get("to_city_id", ""), {})
-            amt          = _safe_float(b.get("freight_amount"))
+            amt          = _safe_float(b.get("total") or b.get("freight_amount"))
             wt           = _safe_float(b.get("wt"))
             pkgs         = int(b.get("no_of_pkg") or 0)
             kaat_val     = _safe_float(k.get("kaat"))
