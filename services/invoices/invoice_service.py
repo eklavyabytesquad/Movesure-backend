@@ -29,6 +29,7 @@ MASTER_COLS = (
     "receiver_id, buyer_name, buyer_gstin, buyer_pan, buyer_aadhar_number, "
     "billing_address, shipping_address, buyer_state, buyer_state_code, "
     "transport_name, gr_no, bilty_id, challan_no, po_number, po_date, "
+    "pvt_marks, "
     "place_of_supply, supply_type, is_reverse_charge, is_export, export_type, "
     "subtotal, total_discount, taxable_amount, "
     "total_cgst, total_sgst, total_igst, total_cess, total_tax, "
