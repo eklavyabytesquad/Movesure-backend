@@ -109,7 +109,7 @@ from services.invoices.series_service import (
 )
 from services.invoices.invoice_service import (
     create_invoice, list_invoices, get_invoice,
-    update_invoice, cancel_invoice, delete_invoice, update_line_items,
+    update_invoice, edit_invoice, cancel_invoice, delete_invoice, update_line_items,
 )
 from services.invoices.payment_service import (
     add_payment, list_payments, delete_payment,
@@ -2320,6 +2320,16 @@ async def invoice_get(invoice_id: str = Path(...)):
 async def invoice_update(request: Request, invoice_id: str = Path(...)):
     try:
         result = await _run(update_invoice, invoice_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/{invoice_id}/edit")
+async def invoice_full_edit(request: Request, invoice_id: str = Path(...)):
+    """Full edit — updates header + replaces all line items and recalculates totals."""
+    try:
+        result = await _run(edit_invoice, invoice_id, await request.json())
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

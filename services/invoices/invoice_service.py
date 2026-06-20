@@ -395,6 +395,95 @@ def update_invoice(invoice_id: str, body: dict) -> dict:
         return {"status": "error", "message": str(e), "status_code": 500}
 
 
+# ── FULL EDIT (header + line items in one call) ───────────────────────────────
+
+def edit_invoice(invoice_id: str, body: dict) -> dict:
+    """
+    Full edit — updates header fields AND replaces all line items atomically.
+    Mirrors the create flow. invoice_no is never changed.
+    Send the same shape as create, with line_items included.
+    """
+    try:
+        body = _sanitize(body)
+
+        sb = get_supabase()
+
+        chk = (
+            sb.table("invoice_master")
+            .select("id, status, invoice_no")
+            .eq("id", invoice_id)
+            .single()
+            .execute()
+        )
+        if not chk.data:
+            return {"status": "error", "message": "Invoice not found", "status_code": 404}
+        if chk.data.get("status") == "CANCELLED":
+            return {"status": "error", "message": "Cannot edit a cancelled invoice", "status_code": 400}
+
+        line_items = body.pop("line_items", None)
+        if line_items is None:
+            return {"status": "error", "message": "line_items is required for full edit", "status_code": 400}
+        if not line_items:
+            return {"status": "error", "message": "line_items cannot be empty", "status_code": 400}
+
+        now = _now()
+
+        supply_type_hint = "INTER" if body.get("supply_type") in ("EXPORT", "SEZ") else (
+            "INTER" if body.get("buyer_state_code") and body.get("seller_state_code")
+            and body["buyer_state_code"] != body["seller_state_code"] else "INTRA"
+        )
+
+        calc_lines = []
+        for i, item in enumerate(line_items):
+            item["_supply_type"] = supply_type_hint
+            item["line_number"] = i + 1
+            calc_lines.append(_calc_line(item))
+
+        totals = _aggregate_totals(calc_lines)
+
+        # Strip fields that must not change
+        for f in ("id", "invoice_no", "invoice_series_id", "created_by", "created_at",
+                  "paid_amount", "payment_status"):
+            body.pop(f, None)
+
+        header_update = {
+            **body,
+            **totals,
+            "updated_at": now,
+        }
+
+        master_res = (
+            sb.table("invoice_master")
+            .update(header_update)
+            .eq("id", invoice_id)
+            .execute()
+        )
+        if not master_res.data:
+            return {"status": "error", "message": "Failed to update invoice header", "status_code": 500}
+
+        # Replace line items
+        sb.table("invoices").delete().eq("invoice_id", invoice_id).execute()
+
+        for line in calc_lines:
+            line.pop("_supply_type", None)
+            line.pop("id", None)
+            line["invoice_id"] = invoice_id
+            line["created_at"] = now
+            line["updated_at"] = now
+
+        lines_res = sb.table("invoices").insert(calc_lines).execute()
+
+        return {
+            "status": "success",
+            "data": {
+                **master_res.data[0],
+                "line_items": lines_res.data or [],
+            },
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
+
 # ── CANCEL ────────────────────────────────────────────────────────────────────
 
 def cancel_invoice(invoice_id: str, cancelled_by: str, cancel_reason: Optional[str] = None) -> dict:
