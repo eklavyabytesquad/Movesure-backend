@@ -94,6 +94,26 @@ from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items
 from services.pohonch.pohonch_edit_service import (
     edit_pohonch, update_gr_fields, recalculate_pohonch, bulk_recalculate_pohonch,
 )
+from services.invoices.tenant_service import (
+    list_tenants, get_tenant, create_tenant, update_tenant, delete_tenant,
+)
+from services.invoices.inventory_service import (
+    list_inventory, get_inventory_item, create_inventory_item,
+    update_inventory_item, delete_inventory_item,
+)
+from services.invoices.receiver_service import (
+    list_receivers, get_receiver, create_receiver, update_receiver, delete_receiver,
+)
+from services.invoices.series_service import (
+    list_series, create_series, update_series, delete_series,
+)
+from services.invoices.invoice_service import (
+    create_invoice, list_invoices, get_invoice,
+    update_invoice, cancel_invoice, delete_invoice, update_line_items,
+)
+from services.invoices.payment_service import (
+    add_payment, list_payments, delete_payment,
+)
 
 
 @asynccontextmanager
@@ -266,7 +286,8 @@ async def ensure_valid_token(request: Request, call_next):
             or path.startswith("/api/truck-trips")
             or path.startswith("/api/staff")
             or path.startswith("/api/trucks")
-            or path.startswith("/api/crossing-bill")):
+            or path.startswith("/api/crossing-bill")
+        or path.startswith("/api/invoice")):
         return await call_next(request)
 
     log.info("Token check: %s %s", request.method, path)
@@ -2051,6 +2072,330 @@ async def health_check():
         content={"status": "success", "message": "API is running", "timestamp": datetime.now().isoformat()},
         status_code=200,
     )
+
+
+# ── Startup ──
+
+
+# ============================================================
+# INVOICE ENDPOINTS
+# ============================================================
+
+# ── Skip auth for invoice routes ──────────────────────────────
+# (handled in ensure_valid_token middleware — add /api/invoice to skip list)
+
+
+# ── Tenants ───────────────────────────────────────────────────
+
+@app.get("/api/invoice/tenants")
+async def invoice_tenants_list(is_active: Optional[bool] = Query(None)):
+    try:
+        result = await _run(list_tenants, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/tenants/{tenant_id}")
+async def invoice_tenant_get(tenant_id: str = Path(...)):
+    try:
+        result = await _run(get_tenant, tenant_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/invoice/tenants")
+async def invoice_tenant_create(request: Request):
+    try:
+        result = await _run(create_tenant, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/tenants/{tenant_id}")
+async def invoice_tenant_update(request: Request, tenant_id: str = Path(...)):
+    try:
+        result = await _run(update_tenant, tenant_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/tenants/{tenant_id}")
+async def invoice_tenant_delete(tenant_id: str = Path(...)):
+    try:
+        result = await _run(delete_tenant, tenant_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Inventory (item catalog) ──────────────────────────────────
+
+@app.get("/api/invoice/inventory")
+async def invoice_inventory_list(
+    tenant_id: str = Query(None),
+    is_active: Optional[bool] = Query(None),
+):
+    try:
+        result = await _run(list_inventory, tenant_id, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/inventory/{item_id}")
+async def invoice_inventory_get(item_id: str = Path(...)):
+    try:
+        result = await _run(get_inventory_item, item_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/invoice/inventory")
+async def invoice_inventory_create(request: Request):
+    try:
+        result = await _run(create_inventory_item, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/inventory/{item_id}")
+async def invoice_inventory_update(request: Request, item_id: str = Path(...)):
+    try:
+        result = await _run(update_inventory_item, item_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/inventory/{item_id}")
+async def invoice_inventory_delete(item_id: str = Path(...)):
+    try:
+        result = await _run(delete_inventory_item, item_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Receivers (buyers) ────────────────────────────────────────
+
+@app.get("/api/invoice/receivers")
+async def invoice_receivers_list(
+    tenant_id: str = Query(None),
+    is_active: Optional[bool] = Query(None),
+):
+    try:
+        result = await _run(list_receivers, tenant_id, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/receivers/{receiver_id}")
+async def invoice_receiver_get(receiver_id: str = Path(...)):
+    try:
+        result = await _run(get_receiver, receiver_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/invoice/receivers")
+async def invoice_receiver_create(request: Request):
+    try:
+        result = await _run(create_receiver, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/receivers/{receiver_id}")
+async def invoice_receiver_update(request: Request, receiver_id: str = Path(...)):
+    try:
+        result = await _run(update_receiver, receiver_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/receivers/{receiver_id}")
+async def invoice_receiver_delete(receiver_id: str = Path(...)):
+    try:
+        result = await _run(delete_receiver, receiver_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Invoice Series ────────────────────────────────────────────
+
+@app.get("/api/invoice/series")
+async def invoice_series_list(tenant_id: str = Query(None)):
+    try:
+        result = await _run(list_series, tenant_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/invoice/series")
+async def invoice_series_create(request: Request):
+    try:
+        result = await _run(create_series, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/series/{series_id}")
+async def invoice_series_update(request: Request, series_id: str = Path(...)):
+    try:
+        result = await _run(update_series, series_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/series/{series_id}")
+async def invoice_series_delete(series_id: str = Path(...)):
+    try:
+        result = await _run(delete_series, series_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Invoices (master + line items) ───────────────────────────
+
+@app.post("/api/invoice/create")
+async def invoice_create(request: Request):
+    try:
+        result = await _run(create_invoice, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/list")
+async def invoice_list(
+    tenant_id: str = Query(None),
+    receiver_id: str = Query(None),
+    status: str = Query(None),
+    payment_status: str = Query(None),
+    invoice_type: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    gr_no: str = Query(None),
+    transport_name: str = Query(None),
+    page: int = Query(1),
+    page_size: int = Query(50),
+):
+    try:
+        result = await _run(
+            list_invoices,
+            tenant_id, receiver_id, status, payment_status,
+            invoice_type, from_date, to_date, gr_no, transport_name,
+            page, page_size,
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/{invoice_id}")
+async def invoice_get(invoice_id: str = Path(...)):
+    try:
+        result = await _run(get_invoice, invoice_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/{invoice_id}")
+async def invoice_update(request: Request, invoice_id: str = Path(...)):
+    try:
+        result = await _run(update_invoice, invoice_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/invoice/{invoice_id}/cancel")
+async def invoice_cancel(request: Request, invoice_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(
+            cancel_invoice,
+            invoice_id,
+            data.get("cancelled_by", ""),
+            data.get("cancel_reason"),
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/{invoice_id}")
+async def invoice_delete(invoice_id: str = Path(...)):
+    try:
+        result = await _run(delete_invoice, invoice_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/invoice/{invoice_id}/line-items")
+async def invoice_line_items_update(request: Request, invoice_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(
+            update_line_items,
+            invoice_id,
+            data.get("line_items", []),
+            data.get("supply_type", "INTRA"),
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Invoice Payments ──────────────────────────────────────────
+
+@app.post("/api/invoice/{invoice_id}/payment")
+async def invoice_payment_add(request: Request, invoice_id: str = Path(...)):
+    try:
+        data = await request.json()
+        data["invoice_id"] = invoice_id
+        result = await _run(add_payment, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/invoice/{invoice_id}/payment")
+async def invoice_payment_list(invoice_id: str = Path(...)):
+    try:
+        result = await _run(list_payments, invoice_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/invoice/{invoice_id}/payment/{payment_id}")
+async def invoice_payment_delete(
+    invoice_id: str = Path(...),
+    payment_id: str = Path(...),
+):
+    try:
+        result = await _run(delete_payment, payment_id, invoice_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 # ── Startup ──
