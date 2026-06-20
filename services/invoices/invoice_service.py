@@ -63,6 +63,26 @@ def _safe_float(v) -> float:
         return 0.0
 
 
+# Fields that must be None (not "") when empty — date and UUID columns
+_DATE_FIELDS = {"invoice_date", "due_date", "po_date", "invoice_date", "ack_date", "cancelled_at"}
+_UUID_FIELDS = {
+    "tenant_id", "receiver_id", "bilty_id", "original_invoice_id",
+    "invoice_series_id", "cancelled_by", "created_by", "updated_by",
+    "inventory_item_id",
+}
+
+
+def _sanitize(body: dict) -> dict:
+    """Convert empty strings to None for date/UUID fields — Postgres rejects '' for those types."""
+    out = {}
+    for k, v in body.items():
+        if isinstance(v, str) and v.strip() == "" and (k in _DATE_FIELDS or k in _UUID_FIELDS):
+            out[k] = None
+        else:
+            out[k] = v
+    return out
+
+
 # ── Auto invoice number ───────────────────────────────────────────────────────
 
 def _next_invoice_no(sb, tenant_id: str, series_id: Optional[str]) -> str:
@@ -192,6 +212,8 @@ def create_invoice(body: dict) -> dict:
     Optional: invoice_series_id, receiver_id, all snapshot fields, transport_name, etc.
     """
     try:
+        body = _sanitize(body)
+
         required = ["tenant_id", "seller_name", "buyer_name", "created_by"]
         missing = [f for f in required if not body.get(f)]
         if missing:
@@ -341,6 +363,7 @@ def get_invoice(invoice_id: str) -> dict:
 
 def update_invoice(invoice_id: str, body: dict) -> dict:
     try:
+        body = _sanitize(body)
         sb = get_supabase()
 
         # Check exists and not cancelled
