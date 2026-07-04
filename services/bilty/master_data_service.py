@@ -15,9 +15,16 @@ PAGE_SIZE = 40  # default rows per page
 TABLE_CONFIG = {
     "cities": {
         "table": "cities",
-        "columns": "id, city_code, city_name, created_by, updated_by, created_at, updated_at",
-        "search_cols": ["city_code", "city_name"],
+        "columns": "id, city_code, city_name, state_id, state_code, state_name, created_by, updated_by, created_at, updated_at",
+        "search_cols": ["city_code", "city_name", "state_name"],
         "order": "city_name",
+        "pk": "id",
+    },
+    "states": {
+        "table": "states",
+        "columns": "id, state_code, state_name, created_by, updated_by, created_at, updated_at",
+        "search_cols": ["state_code", "state_name"],
+        "order": "state_name",
         "pk": "id",
     },
     "transports": {

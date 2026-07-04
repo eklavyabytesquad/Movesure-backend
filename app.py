@@ -56,6 +56,7 @@ from services.bilty.master_data_service import (
     list_records, get_record, create_record, update_record, delete_record,
     bulk_update, bulk_create, bulk_delete,
 )
+from services.bilty.city_state_service import assign_state_to_city, bulk_assign_state_to_cities
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
@@ -845,6 +846,40 @@ async def master_bulk_delete(request: Request, entity: str = Path(...)):
         if not ids:
             return JSONResponse(content={"status": "error", "message": "ids array is required"}, status_code=400)
         result = await _run(bulk_delete, entity, ids)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# CITY-STATE MANAGEMENT
+# ============================================================
+
+@app.put("/api/master/cities/{city_id}/assign-state")
+async def city_assign_state(request: Request, city_id: str = Path(...)):
+    """Assign a state to a single city by state_id."""
+    try:
+        data = await request.json()
+        state_id = data.get("state_id")
+        user_id = data.get("user_id")
+        if not state_id:
+            return JSONResponse(content={"status": "error", "message": "state_id is required"}, status_code=400)
+        result = await _run(assign_state_to_city, city_id, state_id, user_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/master/cities/bulk-assign-state")
+async def city_bulk_assign_state(request: Request):
+    """Bulk assign states to cities. Body: { user_id, updates: [{city_id, state_id}] }"""
+    try:
+        data = await request.json()
+        updates = data.get("updates", [])
+        user_id = data.get("user_id")
+        if not updates:
+            return JSONResponse(content={"status": "error", "message": "updates array is required"}, status_code=400)
+        result = await _run(bulk_assign_state_to_cities, updates, user_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
