@@ -85,7 +85,7 @@ from services.truck_service import list_trucks, get_truck
 from services.crossing_bill.crossing_bill_service import (
     get_unbilled_pohonch, create_crossing_bill, add_transaction,
     update_bill, list_crossing_bills, get_crossing_bill,
-    remove_pohonch_from_bill, cancel_crossing_bill,
+    remove_pohonch_from_bill, cancel_crossing_bill, recalculate_crossing_bill,
 )
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
@@ -1373,6 +1373,26 @@ async def crossing_bill_cancel(request: Request, bill_id: str = Path(...)):
         except Exception:
             pass
         result = await _run(cancel_crossing_bill, bill_id, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill/{bill_id}/recalculate")
+async def crossing_bill_recalculate(request: Request, bill_id: str = Path(...)):
+    """
+    Re-fetch live totals from the pohonch table for every pohonch in this bill,
+    rebuild the pohonch_data snapshot, and recompute all bill totals + balances.
+    Preserves existing transactions and paid amounts.
+    Body (optional): { "updated_by": "user-uuid" }
+    """
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(recalculate_crossing_bill, bill_id, data.get("updated_by"))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

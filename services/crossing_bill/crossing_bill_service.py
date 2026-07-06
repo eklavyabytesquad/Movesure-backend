@@ -507,7 +507,121 @@ def remove_pohonch_from_bill(bill_id: str, pohonch_number: str, updated_by: str 
         return {"status": "error", "message": str(e), "status_code": 500}
 
 
-# ── 8. CANCEL BILL ────────────────────────────────────────────────────────────
+# ── 8. RECALCULATE BILL ──────────────────────────────────────────────────────
+
+def recalculate_crossing_bill(bill_id: str, updated_by: str = None) -> dict:
+    """
+    Re-fetch live totals from the pohonch table for every pohonch linked to
+    this bill, rebuild the pohonch_data snapshot, and recompute all bill totals.
+
+    Works on any non-cancelled bill status.
+    Preserves transactions and paid amounts — only snapshot + gross totals change.
+    """
+    try:
+        sb = get_supabase()
+
+        bill = sb.table("crossing_bill").select(BILL_COLS).eq("id", bill_id).single().execute().data
+        if not bill:
+            return {"status": "error", "message": "Bill not found", "status_code": 404}
+        if bill["status"] == "cancelled":
+            return {"status": "error", "message": "Cannot recalculate a cancelled bill", "status_code": 400}
+
+        old_pohonch_data: list = bill.get("pohonch_data") or []
+        if not old_pohonch_data:
+            return {"status": "error", "message": "Bill has no pohonch entries", "status_code": 400}
+
+        pohonch_ids = [p["pohonch_id"] for p in old_pohonch_data if p.get("pohonch_id")]
+
+        # Re-fetch live pohonch rows
+        live_rows_resp = (
+            sb.table("pohonch")
+            .select(
+                "id, pohonch_number, transport_name, transport_gstin, "
+                "total_bilties, total_kaat, total_pf, total_dd, total_amount, "
+                "total_weight, total_packages, is_signed, challan_metadata"
+            )
+            .in_("id", pohonch_ids)
+            .execute()
+        )
+        live_map = {r["id"]: r for r in (live_rows_resp.data or [])}
+
+        new_pohonch_data = []
+        for old_entry in old_pohonch_data:
+            pid = old_entry.get("pohonch_id")
+            live = live_map.get(pid)
+            if not live:
+                # pohonch deleted — keep old snapshot as-is
+                new_pohonch_data.append(old_entry)
+                continue
+            new_pohonch_data.append({
+                "pohonch_id":      pid,
+                "pohonch_number":  live.get("pohonch_number", old_entry.get("pohonch_number")),
+                "transport_name":  live.get("transport_name", ""),
+                "transport_gstin": live.get("transport_gstin", ""),
+                "total_bilties":   live.get("total_bilties", 0),
+                "total_kaat":      _safe_float(live.get("total_kaat")),
+                "total_pf":        _safe_float(live.get("total_pf")),
+                "total_dd":        _safe_float(live.get("total_dd")),
+                "total_amount":    _safe_float(live.get("total_amount")),
+                "total_weight":    _safe_float(live.get("total_weight")),
+                "total_packages":  _safe_float(live.get("total_packages")),
+                "is_signed":       bool(live.get("is_signed")),
+                "challan_nos":     live.get("challan_metadata") or [],
+            })
+
+        # Recompute bill-level totals from refreshed snapshot
+        new_total_kaat    = round(sum(_safe_float(p.get("total_kaat"))   for p in new_pohonch_data), 2)
+        new_total_pf      = round(sum(_safe_float(p.get("total_pf"))     for p in new_pohonch_data), 2)
+        new_total_dd      = round(sum(_safe_float(p.get("total_dd"))     for p in new_pohonch_data), 2)
+        new_total_amount  = round(sum(_safe_float(p.get("total_amount")) for p in new_pohonch_data), 2)
+        new_total_bilties = sum(int(p.get("total_bilties") or 0) for p in new_pohonch_data)
+
+        paid_kaat     = _safe_float(bill.get("total_paid_kaat"))
+        paid_to_trans = _safe_float(bill.get("total_paid_to_transport"))
+
+        old_totals = {
+            "total_kaat":   _safe_float(bill.get("total_kaat")),
+            "total_pf":     _safe_float(bill.get("total_pf")),
+            "total_amount": _safe_float(bill.get("total_amount")),
+        }
+
+        # balance_on_us and balance_on_transport are generated columns — DB computes them
+        sb.table("crossing_bill").update({
+            "pohonch_data":  new_pohonch_data,
+            "total_pohonch": len(new_pohonch_data),
+            "total_bilties": new_total_bilties,
+            "total_kaat":    new_total_kaat,
+            "total_pf":      new_total_pf,
+            "total_dd":      new_total_dd,
+            "total_amount":  new_total_amount,
+            "updated_by":    updated_by,
+            "updated_at":    _now(),
+        }).eq("id", bill_id).execute()
+
+        updated_bill = sb.table("crossing_bill").select(BILL_COLS).eq("id", bill_id).single().execute().data
+
+        return {
+            "status":  "success",
+            "message": f"Crossing bill {bill['bill_no']} recalculated from live pohonch data",
+            "bill_no": bill["bill_no"],
+            "old_totals": old_totals,
+            "new_totals": {
+                "total_kaat":   new_total_kaat,
+                "total_pf":     new_total_pf,
+                "total_amount": new_total_amount,
+            },
+            "diff": {
+                "kaat":   round(new_total_kaat   - old_totals["total_kaat"],   2),
+                "pf":     round(new_total_pf     - old_totals["total_pf"],     2),
+                "amount": round(new_total_amount - old_totals["total_amount"], 2),
+            },
+            "data": updated_bill,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── 9. CANCEL BILL ────────────────────────────────────────────────────────────
 
 def cancel_crossing_bill(bill_id: str, updated_by: str = None) -> dict:
     """Cancel a bill and unlink all its pohonch."""
