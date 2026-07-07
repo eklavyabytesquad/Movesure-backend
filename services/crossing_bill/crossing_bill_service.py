@@ -646,3 +646,40 @@ def cancel_crossing_bill(bill_id: str, updated_by: str = None) -> dict:
         return {"status": "success", "message": "Bill cancelled and pohonch unlinked"}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── 10. DELETE BILL (hard delete) ─────────────────────────────────────────────
+
+def delete_crossing_bill(bill_id: str) -> dict:
+    """
+    Permanently delete a crossing bill.
+    - Unlinks all pohonch (sets crossing_bill_id = NULL so they are available again)
+    - Hard-deletes the crossing_bill row from the DB
+    - Not allowed on paid bills
+    """
+    try:
+        sb = get_supabase()
+
+        bill = sb.table("crossing_bill").select("id, bill_no, status, pohonch_data").eq("id", bill_id).single().execute().data
+        if not bill:
+            return {"status": "error", "message": "Bill not found", "status_code": 404}
+        if bill["status"] == "paid":
+            return {"status": "error", "message": "Cannot delete a fully paid bill", "status_code": 400}
+
+        bill_no = bill.get("bill_no", bill_id)
+
+        # Unlink all pohonch so they become billable again
+        pnos = [p["pohonch_number"] for p in (bill.get("pohonch_data") or []) if p.get("pohonch_number")]
+        if pnos:
+            sb.table("pohonch").update({"crossing_bill_id": None}).in_("pohonch_number", pnos).execute()
+
+        sb.table("crossing_bill").delete().eq("id", bill_id).execute()
+
+        return {
+            "status":  "success",
+            "message": f"Crossing bill {bill_no} permanently deleted and {len(pnos)} pohonch unlinked",
+            "bill_no": bill_no,
+            "unlinked_pohonch": pnos,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}

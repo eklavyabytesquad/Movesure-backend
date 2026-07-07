@@ -86,6 +86,7 @@ from services.crossing_bill.crossing_bill_service import (
     get_unbilled_pohonch, create_crossing_bill, add_transaction,
     update_bill, list_crossing_bills, get_crossing_bill,
     remove_pohonch_from_bill, cancel_crossing_bill, recalculate_crossing_bill,
+    delete_crossing_bill,
 )
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
@@ -1373,6 +1374,20 @@ async def crossing_bill_cancel(request: Request, bill_id: str = Path(...)):
         except Exception:
             pass
         result = await _run(cancel_crossing_bill, bill_id, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/crossing-bill/{bill_id}")
+async def crossing_bill_delete(bill_id: str = Path(...)):
+    """
+    Permanently delete a crossing bill.
+    Unlinks all pohonch (they become billable again), then hard-deletes the row.
+    Not allowed on paid bills.
+    """
+    try:
+        result = await _run(delete_crossing_bill, bill_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
