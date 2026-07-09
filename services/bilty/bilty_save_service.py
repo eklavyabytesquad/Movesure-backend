@@ -210,14 +210,20 @@ def save_bilty(data: dict) -> dict:
                 return bool(r.data)
             futures[shared_pool.submit(check_dup)] = "dup_check"
 
-        # Invoice dedup: same consignor + same invoice_no should not exist
-        if not bilty_id and consignor_name_raw and invoice_no_raw:
+        # Invoice dedup: same consignor + same invoice_no in the same branch + same month
+        # Scoped to branch_id and current month to avoid cross-branch and cross-period false positives
+        bilty_date_raw = data.get("bilty_date") or ""
+        month_prefix = bilty_date_raw[:7]  # "YYYY-MM"
+        if not bilty_id and consignor_name_raw and invoice_no_raw and branch_id and month_prefix:
             def check_invoice_dup():
                 r = (
                     sb.table("bilty")
                     .select("gr_no")
+                    .eq("branch_id", branch_id)
                     .ilike("consignor_name", consignor_name_raw.strip())
                     .eq("invoice_no", invoice_no_raw.strip())
+                    .gte("bilty_date", f"{month_prefix}-01")
+                    .lte("bilty_date", f"{month_prefix}-31")
                     .eq("is_active", True)
                     .limit(1)
                     .execute()
