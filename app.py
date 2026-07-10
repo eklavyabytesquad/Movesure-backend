@@ -116,6 +116,7 @@ from services.invoices.invoice_service import (
 from services.invoices.payment_service import (
     add_payment, list_payments, delete_payment,
 )
+from services.analytics.party_analytics_service import get_party_analytics
 
 
 @asynccontextmanager
@@ -289,7 +290,8 @@ async def ensure_valid_token(request: Request, call_next):
             or path.startswith("/api/staff")
             or path.startswith("/api/trucks")
             or path.startswith("/api/crossing-bill")
-        or path.startswith("/api/invoice")):
+            or path.startswith("/api/invoice")
+            or path.startswith("/api/analytics")):
         return await call_next(request)
 
     log.info("Token check: %s %s", request.method, path)
@@ -2475,6 +2477,48 @@ async def invoice_payment_delete(
         result = await _run(delete_payment, payment_id, invoice_id)
         return _response(result)
     except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# ANALYTICS ENDPOINTS
+# ============================================================
+
+
+@app.get("/api/analytics/party")
+async def party_analytics(
+    query: str = Query(..., description="GSTIN (15 chars) or company name (partial match)"),
+    type: str = Query("consignor", description="consignor or consignee"),
+):
+    """
+    Full analytics for a consignor or consignee.
+
+    Returns:
+    - Summary counts for this month / last month / last week / this year
+    - 6-month trend (graph-ready)
+    - City breakdown with % share (this month, last month, this year)
+    - City delta: new cities, dropped cities, declined cities
+    - Counterparty breakdown (top consignees/consignors)
+    - Counterparty delta: new, dropped, recurring this vs last month
+    - Payment mode and delivery type breakdown
+    """
+    try:
+        party_type = type.lower()
+        if party_type not in ("consignor", "consignee"):
+            return JSONResponse(
+                content={"status": "error", "message": "type must be 'consignor' or 'consignee'"},
+                status_code=400,
+            )
+        if not query or not query.strip():
+            return JSONResponse(
+                content={"status": "error", "message": "query parameter is required"},
+                status_code=400,
+            )
+        result = await _run(get_party_analytics, query.strip(), party_type)
+        status_code = 200 if result.get("status") == "success" else 404
+        return JSONResponse(content=result, status_code=status_code)
+    except Exception as e:
+        log.exception("Error in party_analytics: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
