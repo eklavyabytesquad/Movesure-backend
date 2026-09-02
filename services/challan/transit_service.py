@@ -175,7 +175,8 @@ def get_transit_bilties(challan_no: str, page: int = 1,
         if bilty_ids:
             b_resp = sb.table("bilty").select(
                 "id, gr_no, consignor_name, consignee_name, transport_name, "
-                "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date"
+                "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date, "
+                "short_packages_count, is_advance_bilty"
             ).in_("id", bilty_ids).execute()
             bilty_map = {b["id"]: b for b in (b_resp.data or [])}
 
@@ -184,7 +185,8 @@ def get_transit_bilties(challan_no: str, page: int = 1,
         if station_grs:
             s_resp = sb.table("station_bilty_summary").select(
                 "gr_no, consignor, consignee, transport_name, "
-                "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at"
+                "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at, "
+                "short_packages_count, is_advance_bilty"
             ).in_("gr_no", station_grs).execute()
             station_map = {s["gr_no"]: s for s in (s_resp.data or [])}
 
@@ -203,6 +205,8 @@ def get_transit_bilties(challan_no: str, page: int = 1,
                 r["pvt_marks"] = b.get("pvt_marks")
                 r["contain"] = b.get("contain")
                 r["bilty_date"] = b.get("bilty_date")
+                r["short_packages_count"] = b.get("short_packages_count") or 0
+                r["is_advance_bilty"] = bool(b.get("is_advance_bilty"))
                 r["source_table"] = "bilty"
                 r["bilty_type"] = "reg"
             elif r["gr_no"] in station_map:
@@ -219,6 +223,8 @@ def get_transit_bilties(challan_no: str, page: int = 1,
                 r["pvt_marks"] = s.get("pvt_marks")
                 r["contain"] = s.get("contents")
                 r["bilty_date"] = s.get("created_at")
+                r["short_packages_count"] = s.get("short_packages_count") or 0
+                r["is_advance_bilty"] = bool(s.get("is_advance_bilty"))
                 r["source_table"] = "station_bilty_summary"
                 r["bilty_type"] = "mnl"
 
