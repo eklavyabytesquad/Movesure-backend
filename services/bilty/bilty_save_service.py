@@ -333,6 +333,8 @@ def save_bilty(data: dict) -> dict:
             "total": data.get("total"),
             "remark": data.get("remark"),
             "saving_option": saving_option,
+            "short_packages_count": data.get("short_packages_count"),
+            "is_advance_bilty": data.get("is_advance_bilty"),
         }
 
         # === SAVE ===
