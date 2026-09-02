@@ -214,7 +214,17 @@ def save_bilty(data: dict) -> dict:
         # Scoped to branch_id and current month to avoid cross-branch and cross-period false positives
         bilty_date_raw = data.get("bilty_date") or ""
         month_prefix = bilty_date_raw[:7]  # "YYYY-MM"
-        if not bilty_id and consignor_name_raw and invoice_no_raw and branch_id and month_prefix:
+        next_month_prefix = ""
+        if month_prefix:
+            try:
+                year, month = int(month_prefix[:4]), int(month_prefix[5:7])
+                if month == 12:
+                    next_month_prefix = f"{year + 1}-01-01"
+                else:
+                    next_month_prefix = f"{year}-{month + 1:02d}-01"
+            except ValueError:
+                next_month_prefix = ""
+        if not bilty_id and consignor_name_raw and invoice_no_raw and branch_id and next_month_prefix:
             def check_invoice_dup():
                 r = (
                     sb.table("bilty")
@@ -223,7 +233,7 @@ def save_bilty(data: dict) -> dict:
                     .ilike("consignor_name", consignor_name_raw.strip())
                     .eq("invoice_no", invoice_no_raw.strip())
                     .gte("bilty_date", f"{month_prefix}-01")
-                    .lte("bilty_date", f"{month_prefix}-31")
+                    .lt("bilty_date", next_month_prefix)
                     .eq("is_active", True)
                     .limit(1)
                     .execute()
