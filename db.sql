@@ -86,7 +86,11 @@ CREATE TABLE public.cities (
   updated_by uuid,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT cities_pkey PRIMARY KEY (id)
+  state_id uuid,
+  state_code character varying,
+  state_name character varying,
+  CONSTRAINT cities_pkey PRIMARY KEY (id),
+  CONSTRAINT cities_state_id_fkey FOREIGN KEY (state_id) REFERENCES public.states(id)
 );
 CREATE TABLE public.transports (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -1407,4 +1411,14 @@ CREATE TABLE public.invoice_payments (
   CONSTRAINT invoice_payments_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoice_master(id),
   CONSTRAINT invoice_payments_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.states (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  state_code character varying NOT NULL UNIQUE,
+  state_name character varying NOT NULL,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT states_pkey PRIMARY KEY (id)
 );

@@ -88,6 +88,7 @@ from services.crossing_bill.crossing_bill_service import (
     remove_pohonch_from_bill, cancel_crossing_bill, recalculate_crossing_bill,
     delete_crossing_bill,
 )
+from services.crossing_bill.nil_bilty_service import find_nil_bilties
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -1287,6 +1288,26 @@ async def crossing_bill_pohonch(
     """Return unbilled pohonch eligible for a new crossing bill."""
     try:
         result = await _run(get_unbilled_pohonch, transport_gstin, transport_name, transport_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/crossing-bill/nil-bilties")
+async def crossing_bill_nil_bilties(
+    transport_gstin: str = Query(...),
+    from_date:       str = Query(...),
+    to_date:         str = Query(...),
+    station_name:    str = Query(None),
+):
+    """
+    Bilties for a transport DISPATCHED in [from_date, to_date] (judged by the
+    carrying challan's dispatch_date, not bilty_date) that have NO pohonch
+    (crossing-challan) proof yet — the "NILL" bucket. Also reports bilties
+    that already have an unbilled or already-billed pohonch in that window.
+    """
+    try:
+        result = await _run(find_nil_bilties, transport_gstin, from_date, to_date, station_name)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
