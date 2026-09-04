@@ -88,7 +88,7 @@ from services.crossing_bill.crossing_bill_service import (
     remove_pohonch_from_bill, cancel_crossing_bill, recalculate_crossing_bill,
     delete_crossing_bill,
 )
-from services.crossing_bill.nil_bilty_service import find_nil_bilties
+from services.crossing_bill.nil_bilty_service import find_nil_bilties, create_nil_catchup_pohonch
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -1308,6 +1308,31 @@ async def crossing_bill_nil_bilties(
     """
     try:
         result = await _run(find_nil_bilties, transport_gstin, from_date, to_date, station_name)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/crossing-bill/nil-bilties")
+async def crossing_bill_nil_bilties_create(request: Request):
+    """
+    Create ONE catch-up pohonch (transport's own normal prefix + existing
+    series, e.g. KBF0103 — never a "NILL-..." pohonch number) for every
+    bilty in the no_pohonch bucket, then tag each covered GR's
+    bilty_wise_kaat.pohonch_no with a "NILL-<MON>-<PREFIX>" marker
+    (e.g. "NILL-AUG-KBF") for audit purposes.
+    Body: { transport_gstin, from_date, to_date, station_name?, created_by? }
+    """
+    try:
+        data = await request.json()
+        result = await _run(
+            create_nil_catchup_pohonch,
+            data.get("transport_gstin"),
+            data.get("from_date"),
+            data.get("to_date"),
+            data.get("station_name"),
+            data.get("created_by"),
+        )
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
