@@ -50,14 +50,18 @@ Flow (read, GET /api/crossing-bill/nil-bilties):
 
 Flow (write, POST /api/crossing-bill/nil-bilties):
   1. Re-run the read flow to get the no_pohonch bucket.
-  2. Create one pohonch via create_pohonch_from_gr_items with NO prefix
-     override (auto-derives the transport's own prefix + continues its
-     existing series).
-  3. Tag bilty_wise_kaat.pohonch_no = "NILL-<MON>-<PREFIX>" for every GR in
-     the bucket (update-only — this backend never inserts kaat rows, same
-     convention as kaat_update_service).
+  2. Resolve the transport's ESTABLISHED prefix from its own pohonch
+     history (see _resolve_established_prefix) — falling back to a fresh
+     name-derived guess only for a genuinely brand-new transport — and
+     create one pohonch via create_pohonch_from_gr_items with that exact
+     prefix, continuing its existing series.
+  3. Tag bilty_wise_kaat.pohonch_no = "NILL-<MON>-<PREFIX>-<YY>" for every
+     GR in the bucket (update-only — this backend never inserts kaat rows,
+     same convention as kaat_update_service).
 """
 from __future__ import annotations
+import re
+from collections import Counter
 from datetime import date, timedelta
 from services.supabase_client import get_supabase
 from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items, _make_prefix
@@ -91,13 +95,46 @@ def _prev_day(date_str: str) -> str:
     return str(date.fromisoformat(date_str) - timedelta(days=1))
 
 
-def _nill_marker(transport_name: str, from_date: str) -> str:
-    """'NILL-<MON>-<PREFIX>-<YY>' e.g. 'NILL-AUG-KBF-26' — the same audit
+def _resolve_established_prefix(sb, transport_gstin: str, transport_name: str) -> str:
+    """
+    The prefix to use for a NEW pohonch for this transport. ALWAYS prefer
+    the transport's own established prefix — extracted from the alphabetic
+    lead-in of its existing pohonch_number history for this exact GSTIN —
+    over a fresh name-derived guess.
+
+    Why this matters: a transport's real prefix is often a chosen
+    abbreviation/brand code that word-initials extraction cannot reliably
+    reproduce. E.g. transport_name "CKT FRIEGHT CARRIER" (their established
+    prefix is "CKT", 35 existing pohonch CKT0001..CKT0035) naively reduces
+    to "C"+"F" = "CF" via _make_prefix (CARRIER is a skip-word, FRIEGHT
+    isn't) — a completely disconnected series. Checking history first and
+    only falling back to _make_prefix for a genuinely brand-new transport
+    (no pohonch yet) avoids ever fragmenting an established series again.
+    """
+    res = (
+        sb.table("pohonch")
+        .select("pohonch_number")
+        .eq("transport_gstin", transport_gstin)
+        .execute()
+    )
+    counts: Counter[str] = Counter()
+    for r in res.data or []:
+        m = re.match(r"^([A-Za-z.]+)", r.get("pohonch_number") or "")
+        if m:
+            counts[m.group(1)] += 1
+    if counts:
+        return counts.most_common(1)[0][0]
+    return _make_prefix(transport_name)
+
+
+def _nill_marker(prefix: str, from_date: str) -> str:
+    """'NILL-<MON>-<PREFIX>-<YY>' e.g. 'NILL-AUG-CKT-26' — the same audit
     marker used both as bilty_wise_kaat.pohonch_no AND as the pohonch_bilty
     ("P/B No.") value for every GR in a catch-up pohonch, so every place
     the GR shows up displays the same tag. The 2-digit year keeps markers
-    from different years (e.g. Aug 2026 vs Aug 2027) distinct."""
-    prefix = _make_prefix(transport_name)
+    from different years (e.g. Aug 2026 vs Aug 2027) distinct. `prefix`
+    must be the transport's ESTABLISHED prefix — see
+    _resolve_established_prefix — never a fresh name-derived guess."""
     d = date.fromisoformat(from_date)
     return f"NILL-{d.strftime('%b').upper()}-{prefix}-{d.strftime('%y')}"
 
@@ -388,14 +425,17 @@ def find_nil_bilties(
     pohonch_billed.sort(key=lambda r: (r.get("bilty_date") or "", r["gr_no"]))
 
     # ── 5. Ready-to-post payload for POST /api/crossing-bill/nil-bilties ───
-    # pohonch_prefix stays None on purpose: create_pohonch_from_gr_items then
-    # auto-derives the TRANSPORT'S OWN prefix and continues its existing
-    # series (e.g. next after KBF0102 is KBF0103) — never a "NILL-..." number.
-    # pohonch_bilty ("P/B No.") is the SAME NILL-<MON>-<PREFIX> marker for
-    # every GR — not a running 1,2,3... count — so it matches what gets
+    # pohonch_prefix is the transport's ESTABLISHED prefix (from its own
+    # pohonch history — see _resolve_established_prefix), so
+    # create_pohonch_from_gr_items continues its existing series exactly
+    # (e.g. next after CKT0035 is CKT0036) — never a fresh, potentially
+    # different name-derived guess, and never a "NILL-..." number.
+    # pohonch_bilty ("P/B No.") is the SAME NILL-<MON>-<PREFIX>-<YY> marker
+    # for every GR — not a running 1,2,3... count — so it matches what gets
     # written to bilty_wise_kaat.pohonch_no and shows up identically
     # wherever this GR is displayed.
-    marker = _nill_marker(no_pohonch[0]["transport_name"], from_date) if no_pohonch else None
+    resolved_prefix = _resolve_established_prefix(sb, gstin, no_pohonch[0]["transport_name"]) if no_pohonch else None
+    marker = _nill_marker(resolved_prefix, from_date) if no_pohonch else None
     gr_items = [{"gr_no": r["gr_no"], "pohonch_bilty": marker} for r in no_pohonch]
     nil_challan_nos = sorted({r["challan_no"] for r in no_pohonch if r.get("challan_no")})
 
@@ -430,7 +470,7 @@ def find_nil_bilties(
                     "transport_gstin": gstin,
                     "challan_nos": nil_challan_nos,
                     "gr_items": gr_items,
-                    "pohonch_prefix": None,
+                    "pohonch_prefix": resolved_prefix,
                     "nill_marker": marker,
                 },
             },
@@ -508,7 +548,7 @@ def create_nil_catchup_pohonch(
         transport_gstin=gstin,
         challan_nos=payload["challan_nos"],
         gr_items=payload["gr_items"],
-        pohonch_prefix=None,  # transport's own prefix + existing series
+        pohonch_prefix=payload["pohonch_prefix"],  # transport's ESTABLISHED prefix — never guessed fresh
         created_by=created_by,
     )
     if created.get("status") != "success":
