@@ -19,10 +19,21 @@ in neither bucket and are not returned here.
 The catch-up pohonch itself is created with the TRANSPORT'S OWN normal
 prefix and numbering series (e.g. "KBF0103", continuing wherever that
 transport's series already is) — never a special "NILL-..." pohonch
-number. The "NILL-<MON>-<PREFIX>" marker (e.g. "NILL-AUG-KBF") is instead
-written into bilty_wise_kaat.pohonch_no for every covered GR, purely as an
-audit tag distinguishing "retroactively caught up" GRs from ones that got
-a pohonch through the normal daily flow.
+number. The "NILL-<MON>-<PREFIX>-<YY>" marker (e.g. "NILL-AUG-KBF-26") is
+instead written into bilty_wise_kaat.pohonch_no AND pohonch_bilty for every
+covered GR, purely as an audit tag distinguishing "retroactively caught
+up" GRs from ones that got a pohonch through the normal daily flow. The
+2-digit year keeps markers from different years distinct.
+
+IMPORTANT — station_name is a destination filter, not a scoping unit for
+catch-up creation: one transport's challans typically carry GRs to SEVERAL
+destinations at once. Filtering by station_name and then creating a
+catch-up pohonch from that PARTIAL result leaves every other destination's
+nil bilties on the same challans uncovered. Omit station_name when the
+goal is "give this transport full proof for this month" — use it only for
+inspecting one destination's bilties. The API returns
+`partial_scope_warning` whenever station_name is set, precisely to flag
+this.
 
 Flow (read, GET /api/crossing-bill/nil-bilties):
   1. Find challans dispatched in [from_date, to_date] (+ their dispatch_date).
@@ -78,6 +89,17 @@ def _next_day(date_str: str) -> str:
 
 def _prev_day(date_str: str) -> str:
     return str(date.fromisoformat(date_str) - timedelta(days=1))
+
+
+def _nill_marker(transport_name: str, from_date: str) -> str:
+    """'NILL-<MON>-<PREFIX>-<YY>' e.g. 'NILL-AUG-KBF-26' — the same audit
+    marker used both as bilty_wise_kaat.pohonch_no AND as the pohonch_bilty
+    ("P/B No.") value for every GR in a catch-up pohonch, so every place
+    the GR shows up displays the same tag. The 2-digit year keeps markers
+    from different years (e.g. Aug 2026 vs Aug 2027) distinct."""
+    prefix = _make_prefix(transport_name)
+    d = date.fromisoformat(from_date)
+    return f"NILL-{d.strftime('%b').upper()}-{prefix}-{d.strftime('%y')}"
 
 
 def _arrival_date(dispatch_date_str: str | None) -> str | None:
@@ -251,12 +273,16 @@ def _empty_result(transport_gstin: str, from_date: str, to_date: str, station_na
         "to_date": to_date,
         "station_name": station_name,
         "matched_city_ids": [],
+        "partial_scope_warning": (
+            f"station_name='{station_name}' restricts results to that destination only. "
+            "Omit station_name to catch a transport's full nil-bilty set." if station_name else None
+        ),
         "totals": {"dispatched_matching": 0, "no_pohonch": 0, "pohonch_unbilled": 0, "pohonch_billed": 0},
         "no_pohonch": {
             "bilties": [], "total_weight": 0, "total_amount": 0, "total_packages": 0,
             "suggested_pohonch_payload": {
                 "transport_name": None, "transport_gstin": gstin,
-                "challan_nos": [], "gr_items": [], "pohonch_prefix": None,
+                "challan_nos": [], "gr_items": [], "pohonch_prefix": None, "nill_marker": None,
             },
         },
         "pohonch_unbilled": [],
@@ -365,7 +391,12 @@ def find_nil_bilties(
     # pohonch_prefix stays None on purpose: create_pohonch_from_gr_items then
     # auto-derives the TRANSPORT'S OWN prefix and continues its existing
     # series (e.g. next after KBF0102 is KBF0103) — never a "NILL-..." number.
-    gr_items = [{"gr_no": r["gr_no"], "pohonch_bilty": str(i + 1)} for i, r in enumerate(no_pohonch)]
+    # pohonch_bilty ("P/B No.") is the SAME NILL-<MON>-<PREFIX> marker for
+    # every GR — not a running 1,2,3... count — so it matches what gets
+    # written to bilty_wise_kaat.pohonch_no and shows up identically
+    # wherever this GR is displayed.
+    marker = _nill_marker(no_pohonch[0]["transport_name"], from_date) if no_pohonch else None
+    gr_items = [{"gr_no": r["gr_no"], "pohonch_bilty": marker} for r in no_pohonch]
     nil_challan_nos = sorted({r["challan_no"] for r in no_pohonch if r.get("challan_no")})
 
     return {
@@ -376,6 +407,13 @@ def find_nil_bilties(
             "to_date": to_date,
             "station_name": station_name,
             "matched_city_ids": city_ids,
+            "partial_scope_warning": (
+                f"station_name='{station_name}' restricts results to that destination only. "
+                "A challan/transport typically carries GRs to SEVERAL destinations at once — "
+                "creating a catch-up pohonch from a station-scoped result will NOT cover the "
+                "rest of that transport's nil bilties. Omit station_name to catch everything."
+                if station_name else None
+            ),
             "totals": {
                 "dispatched_matching": len(matched),
                 "no_pohonch": len(no_pohonch),
@@ -393,6 +431,7 @@ def find_nil_bilties(
                     "challan_nos": nil_challan_nos,
                     "gr_items": gr_items,
                     "pohonch_prefix": None,
+                    "nill_marker": marker,
                 },
             },
             "pohonch_unbilled": pohonch_unbilled,
@@ -439,10 +478,13 @@ def create_nil_catchup_pohonch(
     - The pohonch itself uses the transport's own normal auto-derived
       prefix and continues its existing numbering series (e.g. KBF0103) —
       never a "NILL-..." pohonch number.
-    - Every covered GR's bilty_wise_kaat.pohonch_no is then tagged with
-      "NILL-<MON>-<PREFIX>" (e.g. "NILL-AUG-KBF") as an audit marker.
-      Update-only: GRs with no existing bilty_wise_kaat row are reported,
-      not created (this backend never inserts kaat rows).
+    - Every GR's pohonch_bilty ("P/B No.") inside that pohonch's
+      bilty_metadata is set to "NILL-<MON>-<PREFIX>" (e.g. "NILL-AUG-KBF")
+      — not a running 1,2,3... count — so the marker is visible wherever
+      that GR is shown.
+    - Every covered GR's bilty_wise_kaat.pohonch_no is then tagged with the
+      SAME marker. Update-only: GRs with no existing bilty_wise_kaat row
+      are reported, not created (this backend never inserts kaat rows).
     """
     lookup = find_nil_bilties(transport_gstin, from_date, to_date, station_name)
     if lookup["status"] != "success":
@@ -472,9 +514,7 @@ def create_nil_catchup_pohonch(
     if created.get("status") != "success":
         return created
 
-    prefix = _make_prefix(transport_name)
-    month_abbr = date.fromisoformat(from_date).strftime("%b").upper()
-    marker = f"NILL-{month_abbr}-{prefix}"
+    marker = payload["nill_marker"]  # same marker already used as pohonch_bilty for every GR
 
     sb = get_supabase()
     marked, missing = [], []
