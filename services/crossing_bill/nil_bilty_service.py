@@ -539,3 +539,163 @@ def create_nil_catchup_pohonch(
         "kaat_missing_gr_nos": missing,
         "data": created["data"],
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# READ (audit report): GET /api/crossing-bill/transport-challan-report
+# ─────────────────────────────────────────────────────────────────────────
+
+def get_transport_challan_report(
+    transport_gstin: str,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    """
+    Full audit view: every challan dispatched for this transport in
+    [from_date, to_date] (same 1-day transit-lag rule as find_nil_bilties),
+    and EVERY bilty carried on those challans — across ALL destination
+    stations, unlike find_nil_bilties which is filterable by one station —
+    grouped by challan_no. Each bilty row carries:
+      - station: destination city name (resolved from to_city_id / city_id)
+      - kaat_pohonch_no: bilty_wise_kaat.pohonch_no AS-IS (whatever tag is
+        stored there right now — e.g. a "NILL-AUG-KBF-26" catch-up marker,
+        or null if nothing has ever been written there)
+      - has_crossing_challan: whether REAL pohonch proof exists (the GR
+        appears in some pohonch.bilty_metadata) — this is the authoritative
+        proof-exists check, independent of whatever kaat_pohonch_no says
+      - pohonch_number / is_billed / bill_no: detail on that real proof
+      - dispatch_date / arrival_date for the carrying challan
+
+    This is the "inspect by station" companion to find_nil_bilties: it
+    never filters by station_name (there's no create action attached to
+    this endpoint, so the station-scoping trap from find_nil_bilties does
+    not apply here — this is read-only, for humans to look through).
+    """
+    if not transport_gstin:
+        return {"status": "error", "message": "transport_gstin is required", "status_code": 400}
+    if not from_date or not to_date:
+        return {"status": "error", "message": "from_date and to_date are required (YYYY-MM-DD)", "status_code": 400}
+    try:
+        date.fromisoformat(from_date)
+        date.fromisoformat(to_date)
+    except ValueError:
+        return {"status": "error", "message": "Invalid date format. Use YYYY-MM-DD", "status_code": 400}
+
+    sb = get_supabase()
+    gstin = transport_gstin.strip().upper()
+    dispatch_lo = _prev_day(from_date)
+    dispatch_hi_excl = to_date
+
+    challan_map = _fetch_dispatched_challans(sb, dispatch_lo, dispatch_hi_excl)
+    matched = _match_bilties_for_challans(sb, challan_map, gstin, [], [])  # no station filter — full report
+
+    empty = {
+        "transport_gstin": gstin,
+        "transport_name": None,
+        "from_date": from_date,
+        "to_date": to_date,
+        "totals": {"challans": 0, "bilties": 0, "with_pohonch": 0, "without_pohonch": 0},
+        "challans": [],
+    }
+    if not matched:
+        return {"status": "success", "message": "No dispatched bilties for this transport in this window", "data": empty}
+
+    # ── Destination city names ──────────────────────────────────────────────
+    city_ids = list({r["city_id"] for r in matched.values() if r.get("city_id")})
+    city_map: dict[str, str] = {}
+    for chunk in _chunks(city_ids, 200):
+        res = sb.table("cities").select("id, city_name, city_code").in_("id", chunk).execute()
+        for c in res.data or []:
+            city_map[c["id"]] = c.get("city_name") or c.get("city_code") or ""
+
+    # ── bilty_wise_kaat.pohonch_no, as-is, per GR ───────────────────────────
+    gr_nos = list(matched.keys())
+    kaat_pohonch_no: dict[str, str | None] = {}
+    for chunk in _chunks(gr_nos, 200):
+        res = sb.table("bilty_wise_kaat").select("gr_no, pohonch_no").in_("gr_no", chunk).execute()
+        for r in res.data or []:
+            kaat_pohonch_no[r["gr_no"]] = r.get("pohonch_no")
+
+    # ── Real crossing-proof status (pohonch table is small — full scan,
+    #     same accepted pattern used throughout this file) ──────────────────
+    all_pohonch = sb.table("pohonch").select("id, pohonch_number, bilty_metadata, crossing_bill_id").execute()
+    gr_pohonch_map: dict[str, dict] = {}
+    for p in all_pohonch.data or []:
+        for entry in (p.get("bilty_metadata") or []):
+            gr = entry.get("gr_no")
+            if gr and gr not in gr_pohonch_map:
+                gr_pohonch_map[gr] = {
+                    "pohonch_number": p.get("pohonch_number"),
+                    "crossing_bill_id": p.get("crossing_bill_id"),
+                }
+
+    billed_ids = {v["crossing_bill_id"] for v in gr_pohonch_map.values() if v.get("crossing_bill_id")}
+    bill_no_map: dict[str, str] = {}
+    if billed_ids:
+        res = sb.table("crossing_bill").select("id, bill_no").in_("id", list(billed_ids)).execute()
+        bill_no_map = {b["id"]: b["bill_no"] for b in (res.data or [])}
+
+    # ── Build enriched, per-GR rows ──────────────────────────────────────────
+    rows = []
+    for gr, r in matched.items():
+        info = gr_pohonch_map.get(gr)
+        rows.append({
+            "gr_no": gr,
+            "source_table": r["source_table"],
+            "challan_no": r["challan_no"],
+            "dispatch_date": r["dispatch_date"],
+            "arrival_date": r["arrival_date"],
+            "bilty_date": r["bilty_date"],
+            "station": city_map.get(r.get("city_id"), ""),
+            "consignor_name": r["consignor_name"],
+            "consignee_name": r["consignee_name"],
+            "weight": r["weight"],
+            "amount": r["amount"],
+            "packages": r["packages"],
+            "kaat_pohonch_no": kaat_pohonch_no.get(gr),
+            "has_crossing_challan": bool(info),
+            "pohonch_number": info["pohonch_number"] if info else None,
+            "is_billed": bool(info and info.get("crossing_bill_id")),
+            "bill_no": bill_no_map.get(info["crossing_bill_id"]) if info and info.get("crossing_bill_id") else None,
+        })
+
+    rows.sort(key=lambda r: (r["challan_no"] or "", r["bilty_date"] or "", r["gr_no"]))
+
+    # ── Group by challan ──────────────────────────────────────────────────
+    challans: dict[str, dict] = {}
+    for r in rows:
+        cno = r["challan_no"]
+        if cno not in challans:
+            challans[cno] = {
+                "challan_no": cno,
+                "dispatch_date": r["dispatch_date"],
+                "arrival_date": r["arrival_date"],
+                "bilty_count": 0,
+                "with_pohonch": 0,
+                "without_pohonch": 0,
+                "bilties": [],
+            }
+        c = challans[cno]
+        c["bilties"].append(r)
+        c["bilty_count"] += 1
+        c["with_pohonch" if r["has_crossing_challan"] else "without_pohonch"] += 1
+
+    challan_list = sorted(challans.values(), key=lambda c: c["dispatch_date"] or "")
+    total_with = sum(1 for r in rows if r["has_crossing_challan"])
+
+    return {
+        "status": "success",
+        "data": {
+            "transport_gstin": gstin,
+            "transport_name": next((r["transport_name"] for r in matched.values() if r.get("transport_name")), None),
+            "from_date": from_date,
+            "to_date": to_date,
+            "totals": {
+                "challans": len(challan_list),
+                "bilties": len(rows),
+                "with_pohonch": total_with,
+                "without_pohonch": len(rows) - total_with,
+            },
+            "challans": challan_list,
+        },
+    }

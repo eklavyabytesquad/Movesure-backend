@@ -88,7 +88,9 @@ from services.crossing_bill.crossing_bill_service import (
     remove_pohonch_from_bill, cancel_crossing_bill, recalculate_crossing_bill,
     delete_crossing_bill,
 )
-from services.crossing_bill.nil_bilty_service import find_nil_bilties, create_nil_catchup_pohonch
+from services.crossing_bill.nil_bilty_service import (
+    find_nil_bilties, create_nil_catchup_pohonch, get_transport_challan_report,
+)
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -1308,6 +1310,27 @@ async def crossing_bill_nil_bilties(
     """
     try:
         result = await _run(find_nil_bilties, transport_gstin, from_date, to_date, station_name)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/crossing-bill/transport-challan-report")
+async def crossing_bill_transport_challan_report(
+    transport_gstin: str = Query(...),
+    from_date:       str = Query(...),
+    to_date:         str = Query(...),
+):
+    """
+    Full audit view: every challan dispatched for this transport in
+    [from_date, to_date] (1-day transit-lag rule applied), and every bilty
+    on those challans across ALL destination stations — with station name,
+    bilty_wise_kaat.pohonch_no, dispatch/arrival date, and whether real
+    pohonch (crossing-challan) proof exists for each one. Grouped by
+    challan_no. Read-only — no station filter, no create action.
+    """
+    try:
+        result = await _run(get_transport_challan_report, transport_gstin, from_date, to_date)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
