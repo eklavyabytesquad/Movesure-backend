@@ -192,30 +192,39 @@ def _fetch_dispatched_challans(sb, lo_date: str, hi_date_excl: str) -> dict[str,
 def _match_bilties_for_challans(
     sb, challan_dispatch_map: dict[str, str], gstin: str,
     city_ids: list[str], city_codes: list[str],
-) -> dict[str, dict]:
-    """Given {challan_no: dispatch_date}, return {gr_no: enriched_row} for GRs
-    on those challans belonging to this transport (+ optional city filter)."""
+) -> tuple[dict[str, dict], list[dict]]:
+    """Given {challan_no: dispatch_date}, return ({gr_no: enriched_row}, transit_rows)
+    for GRs on those challans belonging to this transport (+ optional city filter).
+    transit_rows is returned too so callers can check for orphaned rows (see
+    _find_orphaned_transit_grs)."""
     challan_nos = list(challan_dispatch_map.keys())
     if not challan_nos:
-        return {}
+        return {}, []
 
     transit_rows = []
     for chunk in _chunks(challan_nos, 200):
         res = sb.table("transit_details").select("gr_no, bilty_id, challan_no").in_("challan_no", chunk).execute()
         transit_rows.extend(res.data or [])
     if not transit_rows:
-        return {}
+        return {}, []
 
     gr_challan_map = {r["gr_no"]: r["challan_no"] for r in transit_rows}
-    bilty_ids = [r["bilty_id"] for r in transit_rows if r.get("bilty_id")]
+    # IMPORTANT: join on the transit_details row's OWN gr_no, never on its
+    # bilty_id FK value. Seen live: a transit_details row for a dispatched
+    # challan whose bilty_id pointed at a COMPLETELY UNRELATED bilty (a
+    # different GR, on a different, undispatched challan). Trusting that FK
+    # for the join silently mislabeled results with the wrong GR's identity
+    # while dropping the real one. bilty_id's presence/absence only decides
+    # which source table to look in — gr_no is always the actual join key.
+    bilty_grs = [r["gr_no"] for r in transit_rows if r.get("bilty_id")]
     station_grs = [r["gr_no"] for r in transit_rows if not r.get("bilty_id")]
 
     matched: dict[str, dict] = {}
 
-    for chunk in _chunks(bilty_ids, 200):
+    for chunk in _chunks(bilty_grs, 200):
         q = (
             sb.table("bilty").select(BILTY_COLS)
-            .in_("id", chunk).eq("is_active", True).eq("transport_gst", gstin)
+            .in_("gr_no", chunk).eq("is_active", True).eq("transport_gst", gstin)
         )
         if city_ids:
             q = q.in_("to_city_id", city_ids)
@@ -274,7 +283,29 @@ def _match_bilties_for_challans(
                 "city_id": s.get("city_id"),
             }
 
-    return matched
+    return matched, transit_rows
+
+
+def _find_orphaned_transit_grs(sb, transit_rows: list[dict]) -> list[str]:
+    """
+    GR numbers on a dispatched challan (i.e. present in transit_details)
+    that have NO matching row in `bilty` OR `station_bilty_summary` at all
+    — regardless of transport. This means the transit_details row itself
+    is corrupted/orphaned (e.g. a bilty_id FK pointing at a completely
+    unrelated bilty — the exact case that caused wrong GRs to appear in
+    this report before the gr_no-based join fix above). Cheap: only checks
+    the small set of GRs actually on dispatched challans in this window.
+    """
+    all_grs = [r["gr_no"] for r in transit_rows]
+    if not all_grs:
+        return []
+    found: set[str] = set()
+    for chunk in _chunks(all_grs, 200):
+        b = sb.table("bilty").select("gr_no").in_("gr_no", chunk).execute()
+        found.update(r["gr_no"] for r in (b.data or []))
+        s = sb.table("station_bilty_summary").select("gr_no").in_("gr_no", chunk).execute()
+        found.update(r["gr_no"] for r in (s.data or []))
+    return sorted(set(all_grs) - found)
 
 
 def _boundary_sample(
@@ -296,7 +327,7 @@ def _boundary_sample(
         hi = str(date.fromisoformat(edge_date) + timedelta(days=window_days))
 
     challan_map = _fetch_dispatched_challans(sb, lo, hi)
-    matched = _match_bilties_for_challans(sb, challan_map, gstin, city_ids, city_codes)
+    matched, _ = _match_bilties_for_challans(sb, challan_map, gstin, city_ids, city_codes)
     rows = list(matched.values())
     rows.sort(key=lambda r: r.get("dispatch_date") or "", reverse=(direction == "before"))
     return rows[:limit]
@@ -310,6 +341,7 @@ def _empty_result(transport_gstin: str, from_date: str, to_date: str, station_na
         "to_date": to_date,
         "station_name": station_name,
         "matched_city_ids": [],
+        "orphaned_transit_gr_nos": [],
         "partial_scope_warning": (
             f"station_name='{station_name}' restricts results to that destination only. "
             "Omit station_name to catch a transport's full nil-bilty set." if station_name else None
@@ -372,7 +404,13 @@ def find_nil_bilties(
 
     # ── 1+2+3. Challans dispatched in-window → GRs → filtered to transport ──
     challan_map = _fetch_dispatched_challans(sb, dispatch_lo, dispatch_hi_excl)
-    matched = _match_bilties_for_challans(sb, challan_map, gstin, city_ids, city_codes)
+    matched, transit_rows = _match_bilties_for_challans(sb, challan_map, gstin, city_ids, city_codes)
+
+    # GRs on a dispatched challan with no underlying bilty/station_bilty_summary
+    # row at all, for ANY transport — a corrupted/orphaned transit_details row
+    # (see _find_orphaned_transit_grs). Surfaced so this doesn't silently
+    # disappear from every report that touches these challans.
+    orphaned_gr_nos = _find_orphaned_transit_grs(sb, transit_rows)
 
     # ── Boundary proof: closest 5 bilties just outside the window each side ─
     boundary_before = _boundary_sample(sb, gstin, city_ids, city_codes, dispatch_lo, "before")
@@ -382,6 +420,7 @@ def find_nil_bilties(
         result = _empty_result(transport_gstin, from_date, to_date, station_name)
         result["boundary_proof"]["before"]["bilties"] = boundary_before
         result["boundary_proof"]["after"]["bilties"] = boundary_after
+        result["orphaned_transit_gr_nos"] = orphaned_gr_nos
         return {"status": "success", "message": "No matching dispatched bilties for this transport (and station) in this window", "data": result}
 
     # ── 4. Cross-reference pohonch coverage (pohonch table is small — full scan,
@@ -447,6 +486,7 @@ def find_nil_bilties(
             "to_date": to_date,
             "station_name": station_name,
             "matched_city_ids": city_ids,
+            "orphaned_transit_gr_nos": orphaned_gr_nos,
             "partial_scope_warning": (
                 f"station_name='{station_name}' restricts results to that destination only. "
                 "A challan/transport typically carries GRs to SEVERAL destinations at once — "
@@ -627,7 +667,8 @@ def get_transport_challan_report(
     dispatch_hi_excl = to_date
 
     challan_map = _fetch_dispatched_challans(sb, dispatch_lo, dispatch_hi_excl)
-    matched = _match_bilties_for_challans(sb, challan_map, gstin, [], [])  # no station filter — full report
+    matched, transit_rows = _match_bilties_for_challans(sb, challan_map, gstin, [], [])  # no station filter — full report
+    orphaned_gr_nos = _find_orphaned_transit_grs(sb, transit_rows)
 
     empty = {
         "transport_gstin": gstin,
@@ -636,6 +677,7 @@ def get_transport_challan_report(
         "to_date": to_date,
         "totals": {"challans": 0, "bilties": 0, "with_pohonch": 0, "without_pohonch": 0},
         "challans": [],
+        "orphaned_transit_gr_nos": orphaned_gr_nos,
     }
     if not matched:
         return {"status": "success", "message": "No dispatched bilties for this transport in this window", "data": empty}
@@ -737,5 +779,6 @@ def get_transport_challan_report(
                 "without_pohonch": len(rows) - total_with,
             },
             "challans": challan_list,
+            "orphaned_transit_gr_nos": orphaned_gr_nos,
         },
     }
