@@ -13,9 +13,8 @@ delivery instead of cash.
 get_delivery_income() / get_delivery_expense() remain as single-ledger
 views if you only need one side.
 """
-from datetime import date
 from services.ledger.ledger_service import get_ledger_balance, get_ledger_statement
-from services.ledger.ledger_helpers import resolve_branch_ledger_by_name
+from services.ledger.ledger_helpers import resolve_branch_ledger_by_name, today_ist
 
 DELIVERY_INCOME_LEDGER_NAME = "Delivery Income"
 DELIVERY_EXPENSE_LEDGER_NAME = "Delivery Expense"

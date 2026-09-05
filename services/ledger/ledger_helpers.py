@@ -11,12 +11,34 @@ have SEVERAL bank ledgers — resolve which one to use for a "bank" payment.
 This lives here ONCE. Copying this logic into every screen's service file
 is exactly what caused the original "No Bank Account ledger found" bug.
 """
+from datetime import datetime, timezone, timedelta
 from services.supabase_client import get_supabase
 from services.ledger.group_service import create_group
 from services.ledger.ledger_service import create_ledger
 
 CASH_GROUP_NAME = "Cash-in-Hand"
 BANK_GROUP_NAME = "Bank Accounts"
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def today_ist() -> str:
+    """'Today', in India time — NOT the server's local clock.
+
+    Every voucher-creating function in this package defaults its date to
+    'today' when the caller doesn't pass one explicitly. Plain
+    `date.today()` uses whatever timezone the SERVER process happens to
+    run in — commonly UTC in a cloud deployment — which is up to a full
+    calendar day behind India (UTC+5:30) for roughly 5.5 hours every
+    single day (midnight-to-5:30am IST). A real entry made at
+    "2026-09-06 02:02 IST" was getting saved as voucher_date
+    "2026-09-05" because the server's UTC clock still read the 5th —
+    correct 'now', wrong calendar day for an India-run business. This is
+    a safety net; the frontend should still send an explicit `date`
+    (computed from the browser's LOCAL clock) wherever it can, since only
+    the client actually knows the user's timezone for certain.
+    """
+    return datetime.now(IST).date().isoformat()
 
 
 def resolve_branch_ledger(branch_id: str, group_name: str) -> dict:

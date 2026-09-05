@@ -6,9 +6,8 @@ bill (a delivery charge collected in cash against a GR, a small cash
 expense), the frontend never needs to know a voucher's Dr/Cr shape, and it
 never picks the Cash/Bank ledger itself — see ledger_helpers.resolve_payment_ledger.
 """
-from datetime import date
 from services.ledger.voucher_service import create_voucher
-from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group
+from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
 
 DELIVERY_GROUP_NAME = "Delivery"
 DELIVERY_INCOME_LEDGER_NAME = "Delivery Income"
@@ -49,7 +48,7 @@ def record_income(data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "receipt",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": narration,
         "reference_no": reference_no,
         "created_by": created_by,
@@ -85,7 +84,7 @@ def record_expense(data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": narration,
         "reference_no": reference_no,
         "created_by": created_by,

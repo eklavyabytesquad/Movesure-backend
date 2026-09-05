@@ -10,12 +10,11 @@ Bhada Expense / Cr the driver, new bill); pay it off later via cash or
 bank (Dr the driver / Cr Cash-or-Bank) — same bill-by-bill pattern as
 Transport PF Collection, just reversed.
 """
-from datetime import date
 from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
 from services.ledger.voucher_service import create_voucher
-from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group
+from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
 
 DRIVERS_GROUP_NAME = "Drivers"
 SUNDRY_CREDITORS_GROUP_NAME = "Sundry Creditors"
@@ -127,7 +126,7 @@ def add_trip_bhada(ledger_id: str, data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "purchase",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": narration,
         "reference_no": challan_no,
         "created_by": created_by,
@@ -169,7 +168,7 @@ def pay_driver(ledger_id: str, data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": data.get("narration") or f"Truck Bhada paid ({payment_mode})",
         "created_by": created_by,
         "entries": [

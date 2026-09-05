@@ -8,12 +8,11 @@ their name to see everything about them at once.
 All transporters live under one shared "Transporters" group (auto-created
 under Sundry Debtors the first time it's needed).
 """
-from datetime import date
 from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
 from services.ledger.voucher_service import create_voucher
-from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group
+from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
 
 TRANSPORTERS_GROUP_NAME = "Transporters"
 SUNDRY_DEBTORS_GROUP_NAME = "Sundry Debtors"
@@ -127,7 +126,7 @@ def raise_pf_bill(ledger_id: str, data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "sales",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": data.get("narration") or f"PF settlement bill {reference_no}",
         "created_by": created_by,
         "entries": [
@@ -169,7 +168,7 @@ def collect_payment(ledger_id: str, data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "receipt",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": data.get("narration") or f"Payment collected ({payment_mode})",
         "created_by": created_by,
         "entries": [
@@ -200,7 +199,7 @@ def give_payment(ledger_id: str, data: dict) -> dict:
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
-        "voucher_date": data.get("date") or str(date.today()),
+        "voucher_date": data.get("date") or today_ist(),
         "narration": data.get("narration") or f"Payment given ({payment_mode})",
         "created_by": created_by,
         "entries": [
