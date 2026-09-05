@@ -47,7 +47,7 @@ def _ledger_view(branch_id: str, ledger_name: str, from_date: str, to_date: str,
         "to_date": to_date,
         "entries": [
             {
-                "time": e["time"], "voucher_no": e["voucher_no"],
+                "time": e["time"], "voucher_date": e["voucher_date"], "voucher_no": e["voucher_no"],
                 "narration": e["narration"], "amount": e["amount"],
             }
             for e in entries
@@ -59,7 +59,7 @@ def _ledger_view(branch_id: str, ledger_name: str, from_date: str, to_date: str,
 def get_delivery_income(branch_id: str, from_date: str | None = None, to_date: str | None = None) -> dict:
     if not branch_id:
         return {"status": "error", "message": "branch_id is required", "status_code": 400}
-    today = str(date.today())
+    today = today_ist()
     view = _ledger_view(branch_id, DELIVERY_INCOME_LEDGER_NAME, from_date or today, to_date or today, "cr")
     view["total_income"] = view.pop("total")
     return {"status": "success", "data": view}
@@ -68,7 +68,7 @@ def get_delivery_income(branch_id: str, from_date: str | None = None, to_date: s
 def get_delivery_expense(branch_id: str, from_date: str | None = None, to_date: str | None = None) -> dict:
     if not branch_id:
         return {"status": "error", "message": "branch_id is required", "status_code": 400}
-    today = str(date.today())
+    today = today_ist()
     view = _ledger_view(branch_id, DELIVERY_EXPENSE_LEDGER_NAME, from_date or today, to_date or today, "dr")
     view["total_expense"] = view.pop("total")
     return {"status": "success", "data": view}
@@ -83,7 +83,7 @@ def get_delivery_summary(branch_id: str, from_date: str | None = None, to_date: 
     if not branch_id:
         return {"status": "error", "message": "branch_id is required", "status_code": 400}
 
-    today = str(date.today())
+    today = today_ist()
     from_date = from_date or today
     to_date = to_date or today
 
@@ -96,9 +96,13 @@ def get_delivery_summary(branch_id: str, from_date: str | None = None, to_date: 
     )
     merged.sort(key=lambda r: r["time"])
 
+    # Group by voucher_date (the correct, IST-aware calendar day), never by
+    # slicing the raw UTC timestamp — an entry made at 2am IST has a UTC
+    # timestamp still dated the day before, which would misfile it here
+    # exactly like the bug that caused voucher_date itself to be wrong.
     days: dict[str, list[dict]] = {}
     for r in merged:
-        days.setdefault(r["time"][:10], []).append(r)
+        days.setdefault(r["voucher_date"], []).append(r)
 
     day_rows = []
     running_net = 0.0

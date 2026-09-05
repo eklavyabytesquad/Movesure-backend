@@ -17,9 +17,10 @@ is_active=false. Every balance calculation elsewhere in this package
 already filters on vouchers.is_active, so a cancelled voucher's entries
 simply stop counting everywhere, automatically.
 """
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from services.supabase_client import get_supabase
 from services.ledger.audit_log_service import write_audit_log
+from services.ledger.ledger_helpers import today_ist
 from services.ledger.bill_reference_service import create_bill, recompute_bill_balance
 
 VOUCHER_PREFIX = {
@@ -160,7 +161,7 @@ def create_voucher(data: dict) -> dict:
         return {"status": "error", "message": f"Voucher is not balanced: Dr {dr_total} != Cr {cr_total}", "status_code": 400}
 
     sb = get_supabase()
-    voucher_date = data.get("voucher_date") or str(date.today())
+    voucher_date = data.get("voucher_date") or today_ist()
     voucher_no = _next_voucher_no(sb, branch_id, voucher_type)
 
     voucher_row = {
