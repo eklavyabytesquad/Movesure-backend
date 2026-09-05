@@ -125,6 +125,7 @@ from services.ledger.labour_kharcha_service import (
     list_labour, create_labour, get_labour_detail, add_labour_expense, pay_labour,
 )
 from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
+from services.ledger.delivery_service import get_delivery_income
 from services.ledger.bank_service import list_banks, set_default_bank
 from services.ledger.overview_service import get_ledger_overview
 from services.invoices.tenant_service import (
@@ -3134,6 +3135,22 @@ async def ledger_quick_expense(request: Request):
     try:
         data = await request.json()
         result = await _run(record_expense, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/delivery/income")
+async def ledger_delivery_income_list(
+    branch_id: str = Query(...),
+    from_date:  str = Query(None),
+    to_date:    str = Query(None),
+):
+    """Balance + statement for this branch's real Delivery Income ledger —
+    what the 'Today's entries' list should actually be reading from,
+    instead of local-only browser state."""
+    try:
+        result = await _run(get_delivery_income, branch_id, from_date, to_date)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
