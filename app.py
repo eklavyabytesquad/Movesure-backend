@@ -115,9 +115,18 @@ from services.ledger.quick_entry_service import (
     record_income, record_expense, record_delivery_income, record_delivery_expense,
 )
 from services.ledger.transporter_service import (
-    list_transporters, create_transporter, get_transporter_detail,
-    raise_pf_bill, record_payment as record_transporter_payment,
+    list_transporters, create_transporter, get_transporter_detail, raise_pf_bill,
+    collect_payment as collect_transporter_payment, give_payment as give_transporter_payment,
 )
+from services.ledger.truck_bhada_service import (
+    list_drivers, create_driver, get_driver_detail, add_trip_bhada, pay_driver,
+)
+from services.ledger.labour_kharcha_service import (
+    list_labour, create_labour, get_labour_detail, add_labour_expense, pay_labour,
+)
+from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
+from services.ledger.bank_service import list_banks, set_default_bank
+from services.ledger.overview_service import get_ledger_overview
 from services.invoices.tenant_service import (
     list_tenants, get_tenant, create_tenant, update_tenant, delete_tenant,
 )
@@ -2929,11 +2938,180 @@ async def ledger_transporters_pf_bill(request: Request, ledger_id: str = Path(..
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
-@app.post("/api/ledger/transporters/{ledger_id}/payment")
-async def ledger_transporters_payment(request: Request, ledger_id: str = Path(...)):
+@app.post("/api/ledger/transporters/{ledger_id}/collect")
+async def ledger_transporters_collect(request: Request, ledger_id: str = Path(...)):
+    """Money collected FROM this transporter (against a bill, or on account)."""
     try:
         data = await request.json()
-        result = await _run(record_transporter_payment, ledger_id, data)
+        result = await _run(collect_transporter_payment, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/transporters/{ledger_id}/give")
+async def ledger_transporters_give(request: Request, ledger_id: str = Path(...)):
+    """Money given TO this transporter (e.g. an advance)."""
+    try:
+        data = await request.json()
+        result = await _run(give_transporter_payment, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Truck Bhada (per-trip driver/truck expense) ─────────────────
+
+@app.get("/api/ledger/drivers")
+async def ledger_drivers_list(branch_id: str = Query(...)):
+    try:
+        result = await _run(list_drivers, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/drivers")
+async def ledger_drivers_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_driver, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/drivers/{ledger_id}")
+async def ledger_drivers_detail(ledger_id: str = Path(...)):
+    try:
+        result = await _run(get_driver_detail, ledger_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/drivers/{ledger_id}/bhada")
+async def ledger_drivers_bhada(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(add_trip_bhada, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/drivers/{ledger_id}/pay")
+async def ledger_drivers_pay(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(pay_driver, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Labour Kharcha (per-truck labour expense) ───────────────────
+
+@app.get("/api/ledger/labour")
+async def ledger_labour_list(branch_id: str = Query(...)):
+    try:
+        result = await _run(list_labour, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/labour")
+async def ledger_labour_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_labour, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/labour/{ledger_id}")
+async def ledger_labour_detail(ledger_id: str = Path(...)):
+    try:
+        result = await _run(get_labour_detail, ledger_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/labour/{ledger_id}/expense")
+async def ledger_labour_expense(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(add_labour_expense, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/labour/{ledger_id}/pay")
+async def ledger_labour_pay(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(pay_labour, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Cash Manager (Galla) ─────────────────────────────────────────
+
+@app.get("/api/ledger/cash-manager")
+async def ledger_cash_manager(
+    branch_id: str = Query(...),
+    from_date: str = Query(None),
+    to_date:   str = Query(None),
+):
+    try:
+        result = await _run(get_cash_manager, branch_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/cash-manager/expense")
+async def ledger_cash_manager_expense(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(add_cash_expense, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Bank ledgers (list + default) ───────────────────────────────
+
+@app.get("/api/ledger/banks")
+async def ledger_banks_list(branch_id: str = Query(...)):
+    try:
+        result = await _run(list_banks, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/banks/{ledger_id}/set-default")
+async def ledger_banks_set_default(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(set_default_bank, ledger_id, data.get("branch_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Ledgers overview (browse all, group-wise) ───────────────────
+
+@app.get("/api/ledger/overview")
+async def ledger_overview(branch_id: str = Query(...)):
+    try:
+        result = await _run(get_ledger_overview, branch_id)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
