@@ -197,14 +197,17 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
 
     rows = (
         sb.table("voucher_entries")
-        .select("id, entry_type, amount, narration, voucher_id, "
+        .select("id, entry_type, amount, narration, voucher_id, created_at, "
                  "vouchers(voucher_no, voucher_type, voucher_date, narration, is_active)")
         .eq("ledger_id", ledger_id)
         .execute()
         .data or []
     )
     active = [r for r in rows if r.get("vouchers") and r["vouchers"].get("is_active")]
-    active.sort(key=lambda r: (r["vouchers"]["voucher_date"], r["id"]))
+    # Sort by voucher_date first, then by the actual insert timestamp — NOT
+    # by row id — so same-day entries land in the order they really
+    # happened (a uuid has no chronological meaning at all).
+    active.sort(key=lambda r: (r["vouchers"]["voucher_date"], r["created_at"]))
 
     running = _signed(float(ledger["opening_balance"]), ledger["opening_balance_type"])
     statement = []
@@ -220,6 +223,7 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
             "voucher_no": v["voucher_no"],
             "voucher_type": v["voucher_type"],
             "voucher_date": vd,
+            "time": r["created_at"],
             "narration": r.get("narration") or v.get("narration"),
             "entry_type": r["entry_type"],
             "amount": r["amount"],

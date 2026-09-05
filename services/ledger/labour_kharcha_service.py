@@ -1,11 +1,14 @@
 """
 LABOUR KHARCHA
 ================
-Labour expense per truck/trip, with a note on what it was for (unloading,
-food, etc). Same pattern as Truck Bhada: each labourer/labour-gang is a
-ledger under 'Labour' (a creditor group — you owe them), you add an
-expense as a bill (Dr Labour Kharcha Expense / Cr the labour ledger),
-then pay it off (Dr the labour ledger / Cr Cash-or-Bank).
+Labour expense per truck/trip, itemized: Challan No, Weight, Unloading,
+Crossing, Dala Munshiyana, Labour Wage, Other Charge — the bill total is
+always the sum of those 5 charge fields, never typed in separately, so
+they can never disagree. Same pattern as Truck Bhada: each labourer/
+labour-gang is a ledger under 'Labour' (a creditor group — you owe them),
+you add the itemized expense as a bill (Dr Labour Kharcha Expense / Cr
+the labour ledger, breakdown saved as the bill's metadata), then pay it
+off (Dr the labour ledger / Cr Cash-or-Bank).
 """
 from datetime import date
 from services.supabase_client import get_supabase
@@ -90,31 +93,45 @@ def get_labour_detail(ledger_id: str) -> dict:
     }
 
 
+CHARGE_FIELDS = ("unloading", "crossing", "dala_munshiyana", "labour_wage", "other_charge")
+
+
 def add_labour_expense(ledger_id: str, data: dict) -> dict:
     """
-    data = { branch_id, expense_type (e.g. 'Unloading', 'Food'), truck_number?,
-              challan_no?, amount, date?, narration?, created_by }
-    Creates: Dr this branch's 'Labour Kharcha Expense' ledger  /  Cr this labourer (new bill)
+    data = { branch_id, challan_no?, weight?,
+              unloading?, crossing?, dala_munshiyana?, labour_wage?, other_charge?
+              (each optional, defaults to 0 — fill in whichever apply),
+              date?, narration?, created_by }
+
+    The bill total is always the SUM of the 5 charge fields — never typed
+    in directly — so the breakdown and the total can never disagree.
+    Creates: Dr this branch's 'Labour Kharcha Expense' ledger  /
+             Cr this labourer (new bill, with the full breakdown saved on
+             it as metadata so it can be shown again later, itemized).
     """
     branch_id = data.get("branch_id")
-    expense_type = data.get("expense_type")
-    amount = data.get("amount")
     created_by = data.get("created_by")
-    if not branch_id or not expense_type or not amount or not created_by:
-        return {"status": "error", "message": "branch_id, expense_type, amount and created_by are required", "status_code": 400}
+    if not branch_id or not created_by:
+        return {"status": "error", "message": "branch_id and created_by are required", "status_code": 400}
+
+    charges = {f: round(float(data.get(f) or 0), 2) for f in CHARGE_FIELDS}
+    total = round(sum(charges.values()), 2)
+    if total <= 0:
+        return {
+            "status": "error",
+            "message": "At least one charge (unloading/crossing/dala_munshiyana/labour_wage/other_charge) must be greater than 0",
+            "status_code": 400,
+        }
 
     expense = get_or_create_named_ledger(branch_id, LABOUR_KHARCHA_EXPENSE_LEDGER_NAME, DIRECT_EXPENSES_GROUP_NAME, created_by)
     if expense["status"] != "success":
         return expense
 
-    truck_number = data.get("truck_number")
     challan_no = data.get("challan_no")
-    reference_no = challan_no or expense_type
-    narration = data.get("narration") or (
-        expense_type
-        + (f" - Truck {truck_number}" if truck_number else "")
-        + (f" - Challan {challan_no}" if challan_no else "")
-    )
+    weight = data.get("weight")
+    reference_no = challan_no or f"LBR-{data.get('date') or date.today().isoformat()}"
+    narration = data.get("narration") or (f"Labour Kharcha - Challan {challan_no}" if challan_no else "Labour Kharcha")
+    metadata = {"challan_no": challan_no, "weight": weight, **charges}
 
     return create_voucher({
         "branch_id": branch_id,
@@ -124,10 +141,10 @@ def add_labour_expense(ledger_id: str, data: dict) -> dict:
         "reference_no": reference_no,
         "created_by": created_by,
         "entries": [
-            {"ledger_id": expense["data"]["id"], "entry_type": "dr", "amount": amount},
-            {"ledger_id": ledger_id, "entry_type": "cr", "amount": amount,
+            {"ledger_id": expense["data"]["id"], "entry_type": "dr", "amount": total},
+            {"ledger_id": ledger_id, "entry_type": "cr", "amount": total,
              "bill_allocation_type": "new_ref",
-             "new_bill": {"reference_no": reference_no}},
+             "new_bill": {"reference_no": reference_no, "metadata": metadata}},
         ],
     })
 

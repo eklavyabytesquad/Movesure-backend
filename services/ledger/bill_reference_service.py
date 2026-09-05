@@ -18,7 +18,7 @@ from services.ledger.audit_log_service import write_audit_log
 
 BILL_COLS = (
     "id, ledger_id, reference_no, reference_date, due_date, bill_amount, balance_amount, "
-    "entry_type, source_table, source_id, is_settled, created_by, created_at, updated_at"
+    "entry_type, source_table, source_id, metadata, is_settled, created_by, created_at, updated_at"
 )
 
 
@@ -67,6 +67,7 @@ def create_bill(data: dict, user_id: str | None = None, sb=None) -> dict:
         "entry_type": entry_type,
         "source_table": data.get("source_table"),
         "source_id": data.get("source_id"),
+        "metadata": data.get("metadata"),
         "created_by": created_by,
     }
     if data.get("reference_date"):

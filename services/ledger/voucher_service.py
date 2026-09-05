@@ -120,9 +120,10 @@ def create_voucher(data: dict) -> dict:
         { ledger_id, entry_type: 'dr'|'cr', amount, narration?,
           bill_allocation_type?: 'new_ref' | 'agst_ref' | 'advance' | 'on_account',
           bill_reference_id?   (required when bill_allocation_type='agst_ref'),
-          new_bill?: { reference_no?, reference_date?, due_date?, source_table?, source_id? }
+          new_bill?: { reference_no?, reference_date?, due_date?, source_table?, source_id?, metadata? }
               (used when bill_allocation_type='new_ref'; reference_no defaults
-              to this voucher's own voucher_no if omitted)
+              to this voucher's own voucher_no if omitted; metadata is a
+              freeform breakdown, e.g. Labour Kharcha's charge-by-charge total)
         }, ...
       ]
     }
@@ -186,6 +187,7 @@ def create_voucher(data: dict) -> dict:
                     "entry_type": e["entry_type"],
                     "source_table": nb.get("source_table"),
                     "source_id": nb.get("source_id"),
+                    "metadata": nb.get("metadata"),
                     "created_by": created_by,
                 }, sb=sb)
                 if created_bill["status"] != "success":
