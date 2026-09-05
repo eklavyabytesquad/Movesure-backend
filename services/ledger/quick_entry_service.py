@@ -8,10 +8,18 @@ never picks the Cash/Bank ledger itself — see ledger_helpers.resolve_payment_l
 """
 from datetime import date
 from services.ledger.voucher_service import create_voucher
-from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger
+from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group
 
-DELIVERY_INCOME_LEDGER = "Delivery Income"
-DELIVERY_INCOME_GROUP = "Direct Incomes"
+DELIVERY_GROUP_NAME = "Delivery"
+DELIVERY_INCOME_LEDGER_NAME = "Delivery Income"
+DELIVERY_EXPENSE_LEDGER_NAME = "Delivery Expense"
+
+
+def _ensure_delivery_group() -> None:
+    """'Delivery' holds both the Income and Expense ledger for every
+    branch's delivery screen — same shared-group pattern as Transporters/
+    Drivers/Labour. Auto-created the first time any branch needs it."""
+    get_or_create_group(DELIVERY_GROUP_NAME, None, "income")
 
 
 def record_income(data: dict) -> dict:
@@ -96,7 +104,8 @@ def record_delivery_income(data: dict) -> dict:
     "Ref GRNO 5142, Delivery Amount 300, cash".
     """
     branch_id = data.get("branch_id")
-    delivery_income = get_or_create_named_ledger(branch_id, DELIVERY_INCOME_LEDGER, DELIVERY_INCOME_GROUP, data.get("created_by"))
+    _ensure_delivery_group()
+    delivery_income = get_or_create_named_ledger(branch_id, DELIVERY_INCOME_LEDGER_NAME, DELIVERY_GROUP_NAME, data.get("created_by"))
     if delivery_income["status"] != "success":
         return delivery_income
 
@@ -111,13 +120,27 @@ def record_delivery_income(data: dict) -> dict:
 
 def record_delivery_expense(data: dict) -> dict:
     """
-    data = { branch_id, gr_no?, expense_ledger_id, amount, payment_mode, bank_ledger_id?, date?, created_by }
-    Same as record_expense(), standardizes the GR-based reference — the
-    expense category (fuel, labour, etc.) is still an explicit choice.
+    data = { branch_id, gr_no?, category? (e.g. 'Fuel', 'Misc' — free text,
+              just appended to the narration, no ledger picker needed),
+              amount, payment_mode, bank_ledger_id?, date?, created_by }
+    Auto-resolves (creating if needed) this branch's 'Delivery Expense'
+    ledger — same one every delivery expense posts to, so it always shows
+    up alongside Delivery Income on one combined page
+    (see delivery_service.get_delivery_summary).
     """
+    branch_id = data.get("branch_id")
+    _ensure_delivery_group()
+    delivery_expense = get_or_create_named_ledger(branch_id, DELIVERY_EXPENSE_LEDGER_NAME, DELIVERY_GROUP_NAME, data.get("created_by"))
+    if delivery_expense["status"] != "success":
+        return delivery_expense
+
     gr_no = data.get("gr_no")
+    category = data.get("category")
+    label = f"Delivery expense" + (f" ({category})" if category else "") + (f" - GR {gr_no}" if gr_no else "")
+
     return record_expense({
         **data,
+        "expense_ledger_id": delivery_expense["data"]["id"],
         "reference_no": data.get("reference_no") or gr_no,
-        "narration": data.get("narration") or (f"Delivery expense - GR {gr_no}" if gr_no else None),
+        "narration": data.get("narration") or label,
     })

@@ -99,6 +99,7 @@ from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items
 from services.pohonch.pohonch_edit_service import (
     edit_pohonch, update_gr_fields, recalculate_pohonch, bulk_recalculate_pohonch,
 )
+from services.branch_service import list_branches
 from services.ledger.group_service import (
     list_groups, list_groups_tree, get_group, create_group, update_group, set_group_status,
 )
@@ -125,7 +126,7 @@ from services.ledger.labour_kharcha_service import (
     list_labour, create_labour, get_labour_detail, add_labour_expense, pay_labour,
 )
 from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
-from services.ledger.delivery_service import get_delivery_income
+from services.ledger.delivery_service import get_delivery_income, get_delivery_expense, get_delivery_summary
 from services.ledger.bank_service import list_banks, set_default_bank
 from services.ledger.overview_service import get_ledger_overview
 from services.invoices.tenant_service import (
@@ -2624,6 +2625,18 @@ async def party_analytics(
 # LEDGER ACCOUNTING SYSTEM — groups, ledgers, bills, vouchers
 # ============================================================
 
+@app.get("/api/branches")
+async def branches_list(is_active: bool = Query(True)):
+    """Plain branch picker list — id, name, code. Used by the ledger
+    system's branch selector (store the chosen id in localStorage on the
+    frontend); omit is_active to include inactive branches too."""
+    try:
+        result = await _run(list_branches, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 # ── Ledger Groups (chart of accounts) ─────────────────────────
 
 @app.get("/api/ledger/groups/tree")
@@ -2902,7 +2915,7 @@ async def ledger_audit_log_list(
 # ── Transporter Ledger (single-page-friendly wrapper) ──────────
 
 @app.get("/api/ledger/transporters")
-async def ledger_transporters_list(branch_id: str = Query(...)):
+async def ledger_transporters_list(branch_id: str = Query(None)):
     try:
         result = await _run(list_transporters, branch_id)
         return _response(result)
@@ -2964,7 +2977,7 @@ async def ledger_transporters_give(request: Request, ledger_id: str = Path(...))
 # ── Truck Bhada (per-trip driver/truck expense) ─────────────────
 
 @app.get("/api/ledger/drivers")
-async def ledger_drivers_list(branch_id: str = Query(...)):
+async def ledger_drivers_list(branch_id: str = Query(None)):
     try:
         result = await _run(list_drivers, branch_id)
         return _response(result)
@@ -3014,7 +3027,7 @@ async def ledger_drivers_pay(request: Request, ledger_id: str = Path(...)):
 # ── Labour Kharcha (per-truck labour expense) ───────────────────
 
 @app.get("/api/ledger/labour")
-async def ledger_labour_list(branch_id: str = Query(...)):
+async def ledger_labour_list(branch_id: str = Query(None)):
     try:
         result = await _run(list_labour, branch_id)
         return _response(result)
@@ -3110,7 +3123,7 @@ async def ledger_banks_set_default(request: Request, ledger_id: str = Path(...))
 # ── Ledgers overview (browse all, group-wise) ───────────────────
 
 @app.get("/api/ledger/overview")
-async def ledger_overview(branch_id: str = Query(...)):
+async def ledger_overview(branch_id: str = Query(None)):
     try:
         result = await _run(get_ledger_overview, branch_id)
         return _response(result)
@@ -3140,17 +3153,45 @@ async def ledger_quick_expense(request: Request):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+@app.get("/api/ledger/delivery")
+async def ledger_delivery_summary(
+    branch_id: str = Query(...),
+    from_date:  str = Query(None),
+    to_date:    str = Query(None),
+):
+    """THE combined Kanpur Delivery page: every income AND expense entry,
+    merged into one chronological, day-grouped feed. This is the one to
+    build the page around."""
+    try:
+        result = await _run(get_delivery_summary, branch_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.get("/api/ledger/delivery/income")
 async def ledger_delivery_income_list(
     branch_id: str = Query(...),
     from_date:  str = Query(None),
     to_date:    str = Query(None),
 ):
-    """Balance + statement for this branch's real Delivery Income ledger —
-    what the 'Today's entries' list should actually be reading from,
-    instead of local-only browser state."""
+    """Income side only — the real Delivery Income ledger's balance + statement."""
     try:
         result = await _run(get_delivery_income, branch_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/delivery/expense")
+async def ledger_delivery_expense_list(
+    branch_id: str = Query(...),
+    from_date:  str = Query(None),
+    to_date:    str = Query(None),
+):
+    """Expense side only — the real Delivery Expense ledger's balance + statement."""
+    try:
+        result = await _run(get_delivery_expense, branch_id, from_date, to_date)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

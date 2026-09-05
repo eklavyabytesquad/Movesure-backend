@@ -25,24 +25,33 @@ def _transporters_group_id() -> str | None:
     return get_or_create_group(TRANSPORTERS_GROUP_NAME, SUNDRY_DEBTORS_GROUP_NAME, "asset")
 
 
-def list_transporters(branch_id: str) -> dict:
-    """Every transporter ledger for this branch, each with its live balance
-    already attached — enough to render the whole list page in one call."""
+def list_transporters(branch_id: str | None = None) -> dict:
+    """Every transporter ledger, each with its live balance already
+    attached — enough to render the whole list page in one call. Omit
+    branch_id for the owner's "all branches" view (each row then also
+    carries branch_id/branch_name so you can tell them apart)."""
     group_id = _transporters_group_id()
     if not group_id:
         return {"status": "error", "message": "Could not resolve the Transporters group", "status_code": 500}
 
     sb = get_supabase()
-    rows = (
+    q = (
         sb.table("ledgers")
-        .select("id, name, gstin, phone, is_active")
-        .eq("branch_id", branch_id)
+        .select("id, name, branch_id, gstin, phone, is_active")
         .eq("group_id", group_id)
         .eq("is_active", True)
         .order("name")
-        .execute()
-        .data or []
     )
+    if branch_id:
+        q = q.eq("branch_id", branch_id)
+    rows = q.execute().data or []
+
+    if not branch_id and rows:
+        from services.branch_service import get_branch_name_map
+        branch_map = get_branch_name_map([r["branch_id"] for r in rows])
+        for r in rows:
+            r["branch_name"] = branch_map.get(r["branch_id"])
+
     out = []
     for r in rows:
         bal = get_ledger_balance(r["id"])["data"]

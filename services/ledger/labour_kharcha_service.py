@@ -27,22 +27,30 @@ def _labour_group_id() -> str | None:
     return get_or_create_group(LABOUR_GROUP_NAME, SUNDRY_CREDITORS_GROUP_NAME, "liability")
 
 
-def list_labour(branch_id: str) -> dict:
+def list_labour(branch_id: str | None = None) -> dict:
+    """Omit branch_id for the owner's "all branches" view."""
     group_id = _labour_group_id()
     if not group_id:
         return {"status": "error", "message": "Could not resolve the Labour group", "status_code": 500}
 
     sb = get_supabase()
-    rows = (
+    q = (
         sb.table("ledgers")
-        .select("id, name, phone, is_active")
-        .eq("branch_id", branch_id)
+        .select("id, name, branch_id, phone, is_active")
         .eq("group_id", group_id)
         .eq("is_active", True)
         .order("name")
-        .execute()
-        .data or []
     )
+    if branch_id:
+        q = q.eq("branch_id", branch_id)
+    rows = q.execute().data or []
+
+    if not branch_id and rows:
+        from services.branch_service import get_branch_name_map
+        branch_map = get_branch_name_map([r["branch_id"] for r in rows])
+        for r in rows:
+            r["branch_name"] = branch_map.get(r["branch_id"])
+
     out = []
     for r in rows:
         bal = get_ledger_balance(r["id"])["data"]
