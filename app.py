@@ -99,6 +99,18 @@ from services.pohonch.pohonch_create_service import create_pohonch_from_gr_items
 from services.pohonch.pohonch_edit_service import (
     edit_pohonch, update_gr_fields, recalculate_pohonch, bulk_recalculate_pohonch,
 )
+from services.ledger.group_service import (
+    list_groups, list_groups_tree, get_group, create_group, update_group, set_group_status,
+)
+from services.ledger.ledger_service import (
+    list_ledgers, get_ledger, create_ledger, update_ledger, set_ledger_status,
+    get_ledger_balance, get_ledger_statement,
+)
+from services.ledger.bill_reference_service import list_bills, get_bill, create_bill
+from services.ledger.voucher_service import (
+    list_vouchers, get_voucher, create_voucher, cancel_voucher,
+)
+from services.ledger.audit_log_service import list_audit_log
 from services.invoices.tenant_service import (
     list_tenants, get_tenant, create_tenant, update_tenant, delete_tenant,
 )
@@ -2588,6 +2600,285 @@ async def party_analytics(
         return JSONResponse(content=result, status_code=status_code)
     except Exception as e:
         log.exception("Error in party_analytics: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# LEDGER ACCOUNTING SYSTEM — groups, ledgers, bills, vouchers
+# ============================================================
+
+# ── Ledger Groups (chart of accounts) ─────────────────────────
+
+@app.get("/api/ledger/groups/tree")
+async def ledger_groups_tree(is_active: bool = Query(True)):
+    try:
+        result = await _run(list_groups_tree, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/groups")
+async def ledger_groups_list(is_active: bool = Query(True)):
+    try:
+        result = await _run(list_groups, is_active)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/groups")
+async def ledger_groups_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_group, data, data.get("created_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/groups/{group_id}")
+async def ledger_groups_get(group_id: str = Path(...)):
+    try:
+        result = await _run(get_group, group_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/ledger/groups/{group_id}")
+async def ledger_groups_update(request: Request, group_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_group, group_id, data, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/groups/{group_id}/activate")
+async def ledger_groups_activate(request: Request, group_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(set_group_status, group_id, True, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/groups/{group_id}/deactivate")
+async def ledger_groups_deactivate(request: Request, group_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(set_group_status, group_id, False, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Ledgers (accounts) ────────────────────────────────────────
+
+@app.get("/api/ledger/ledgers")
+async def ledger_ledgers_list(
+    branch_id:  str  = Query(None),
+    group_id:   str  = Query(None),
+    search:     str  = Query(None),
+    is_active:  bool = Query(True),
+    page:       int  = Query(1),
+    page_size:  int  = Query(50),
+):
+    try:
+        result = await _run(list_ledgers, branch_id, group_id, search, is_active, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/ledgers")
+async def ledger_ledgers_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_ledger, data, data.get("created_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/ledgers/{ledger_id}")
+async def ledger_ledgers_get(ledger_id: str = Path(...)):
+    try:
+        result = await _run(get_ledger, ledger_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/ledger/ledgers/{ledger_id}")
+async def ledger_ledgers_update(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = await request.json()
+        result = await _run(update_ledger, ledger_id, data, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/ledgers/{ledger_id}/activate")
+async def ledger_ledgers_activate(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(set_ledger_status, ledger_id, True, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/ledgers/{ledger_id}/deactivate")
+async def ledger_ledgers_deactivate(request: Request, ledger_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(set_ledger_status, ledger_id, False, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/ledgers/{ledger_id}/balance")
+async def ledger_ledgers_balance(ledger_id: str = Path(...)):
+    try:
+        result = await _run(get_ledger_balance, ledger_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/ledgers/{ledger_id}/statement")
+async def ledger_ledgers_statement(
+    ledger_id: str = Path(...),
+    from_date: str = Query(None),
+    to_date:   str = Query(None),
+):
+    try:
+        result = await _run(get_ledger_statement, ledger_id, from_date, to_date)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Bill References (bill-by-bill) ────────────────────────────
+
+@app.get("/api/ledger/bills")
+async def ledger_bills_list(
+    ledger_id:  str  = Query(...),
+    is_settled: bool = Query(None),
+):
+    try:
+        result = await _run(list_bills, ledger_id, is_settled)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/bills")
+async def ledger_bills_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_bill, data, data.get("created_by"), None)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/bills/{bill_id}")
+async def ledger_bills_get(bill_id: str = Path(...)):
+    try:
+        result = await _run(get_bill, bill_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Vouchers (double-entry transactions) ──────────────────────
+
+@app.get("/api/ledger/vouchers")
+async def ledger_vouchers_list(
+    branch_id:     str  = Query(None),
+    voucher_type:  str  = Query(None),
+    from_date:     str  = Query(None),
+    to_date:       str  = Query(None),
+    is_active:     bool = Query(True),
+    page:          int  = Query(1),
+    page_size:     int  = Query(40),
+):
+    try:
+        result = await _run(list_vouchers, branch_id, voucher_type, from_date, to_date, is_active, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/vouchers")
+async def ledger_vouchers_create(request: Request):
+    try:
+        data = await request.json()
+        result = await _run(create_voucher, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/vouchers/{voucher_id}")
+async def ledger_vouchers_get(voucher_id: str = Path(...)):
+    try:
+        result = await _run(get_voucher, voucher_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/vouchers/{voucher_id}/cancel")
+async def ledger_vouchers_cancel(request: Request, voucher_id: str = Path(...)):
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        result = await _run(cancel_voucher, voucher_id, data.get("cancelled_by"), data.get("reason"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Audit Log ──────────────────────────────────────────────────
+
+@app.get("/api/ledger/audit-log")
+async def ledger_audit_log_list(
+    entity_type: str = Query(None),
+    entity_id:   str = Query(None),
+    page:        int = Query(1),
+    page_size:   int = Query(50),
+):
+    try:
+        result = await _run(list_audit_log, entity_type, entity_id, page, page_size)
+        return _response(result)
+    except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
