@@ -79,11 +79,18 @@ def list_vouchers(branch_id: str | None = None, voucher_type: str | None = None,
     q = q.range(offset, offset + page_size - 1)
     res = q.execute()
     total = res.count if res.count is not None else len(res.data or [])
+    rows = res.data or []
+
+    if not branch_id and rows:
+        from services.branch_service import get_branch_name_map
+        branch_map = get_branch_name_map([r["branch_id"] for r in rows])
+        for r in rows:
+            r["branch_name"] = branch_map.get(r["branch_id"])
 
     return {
         "status": "success",
         "data": {
-            "rows": res.data or [], "total": total, "page": page,
+            "rows": rows, "total": total, "page": page,
             "page_size": page_size, "has_more": (offset + page_size) < total,
         },
     }
