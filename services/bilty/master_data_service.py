@@ -71,32 +71,87 @@ DIRECTORY_LIMIT = 200  # dropdown/autocomplete use — not paginated, just cappe
 
 # ── DIRECTORY (lightweight lookup for dropdowns/autocomplete) ──
 
+# Priority order when ranking matches: a city code hit outranks a city name
+# hit, which outranks a transport name hit, which outranks a phone number
+# hit — so searching "KNP" surfaces the city Kanpur (code match) above any
+# transport, and searching "GORAKHPUR" surfaces the city itself above a
+# transport merely named "... GORAKHPUR TRANSPORT".
+_FIELD_TIER = {"city_code": 0, "city_name": 1, "transport_name": 2, "mob_number": 3}
+_FETCH_CAP = 1000  # DB already filters by ilike; this just bounds the worst case before we rank+slice
+
+
+def _field_rank(value, q: str):
+    """0 = exact match, 1 = starts-with, 2 = contains, None = no match."""
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    if v == q:
+        return 0
+    if v.startswith(q):
+        return 1
+    if q in v:
+        return 2
+    return None
+
+
+def _best_score(fields: dict, q: str):
+    """Lowest (field tier * 3 + match quality) across the given {field_name: value} pairs."""
+    best = None
+    for field, value in fields.items():
+        r = _field_rank(value, q)
+        if r is None:
+            continue
+        score = _FIELD_TIER[field] * 3 + r
+        if best is None or score < best:
+            best = score
+    return best
+
+
 def get_directory(search: str = None, limit: int = DIRECTORY_LIMIT) -> dict:
     """
     One fast call for populating city / transport / phone-number pickers —
-    no pagination, just name + the one or two fields a dropdown needs.
-    Pass `search` to filter all three by the same text (city name,
-    transport name, or mobile number) instead of listing everything.
+    no pagination, just the fields a dropdown needs. Pass `search` to
+    filter+rank all of them by the same text (city code, city name,
+    transport name, or mobile number); omit it to just list alphabetically.
+
+    Ranking priority: city code > city name > transport name > mobile
+    number, and on a tie the city always sorts above the transport — so
+    "KNP" puts Kanpur first, and "GORAKHPUR" puts the city Gorakhpur above
+    a transport that merely has "Gorakhpur" in its name.
     """
     try:
         sb = get_supabase()
+        q = (search or "").strip().lower()
 
-        cities_q = sb.table("cities").select("id, city_name, state_name").order("city_name").limit(limit)
-        if search:
-            cities_q = cities_q.ilike("city_name", f"%{search}%")
-        cities = cities_q.execute().data or []
+        cities_q = sb.table("cities").select("id, city_code, city_name, state_name")
+        transports_q = sb.table("transports").select("id, transport_name, city_id, city_name, mob_number")
 
-        transports_q = (
-            sb.table("transports")
-            .select("id, transport_name, city_name, mob_number")
-            .order("transport_name")
-            .limit(limit)
-        )
-        if search:
+        if q:
+            cities_q = cities_q.or_(f"city_code.ilike.%{search}%,city_name.ilike.%{search}%").limit(_FETCH_CAP)
             transports_q = transports_q.or_(
                 f"transport_name.ilike.%{search}%,city_name.ilike.%{search}%,mob_number.ilike.%{search}%"
-            )
+            ).limit(_FETCH_CAP)
+        else:
+            cities_q = cities_q.order("city_name").limit(limit)
+            transports_q = transports_q.order("transport_name").limit(limit)
+
+        cities = cities_q.execute().data or []
         transports = transports_q.execute().data or []
+
+        if q:
+            for c in cities:
+                c["_score"] = _best_score({"city_code": c.get("city_code"), "city_name": c.get("city_name")}, q)
+            for t in transports:
+                t["_score"] = _best_score(
+                    {"transport_name": t.get("transport_name"), "city_name": t.get("city_name"), "mob_number": t.get("mob_number")}, q
+                )
+            cities.sort(key=lambda r: (r["_score"], r.get("city_name") or ""))
+            transports.sort(key=lambda r: (r["_score"], r.get("transport_name") or ""))
+            for r in cities + transports:
+                r.pop("_score", None)
+
+        cities = cities[:limit]
+        transports = transports[:limit]
 
         numbers = [
             {"transport_id": t["id"], "transport_name": t["transport_name"], "mob_number": t["mob_number"]}
@@ -104,9 +159,18 @@ def get_directory(search: str = None, limit: int = DIRECTORY_LIMIT) -> dict:
             if t.get("mob_number")
         ]
 
+        # `results` is cities + transports pre-merged in final display order
+        # (cities always first on a tie) — use this directly for a single
+        # combined search box; `cities`/`transports`/`numbers` stay separate
+        # for pickers that only need one type.
+        results = (
+            [{"type": "city", **c} for c in cities]
+            + [{"type": "transport", **t} for t in transports]
+        )[:limit]
+
         return {
             "status": "success",
-            "data": {"cities": cities, "transports": transports, "numbers": numbers},
+            "data": {"results": results, "cities": cities, "transports": transports, "numbers": numbers},
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
