@@ -19,9 +19,68 @@ LEDGER_COLS = (
     "is_bill_wise, is_active, created_by, updated_by, created_at, updated_at"
 )
 
+# The two groups that mean "this ledger represents a person/company you owe
+# or who owes you" — Transporters nests under Sundry Debtors, Drivers and
+# Labour nest under Sundry Creditors, so checking the whole ancestor chain
+# (not just the immediate group) catches all of them.
+PARTY_GROUP_NAMES = {"Sundry Debtors", "Sundry Creditors"}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _all_groups_map(sb) -> dict:
+    """{group_id: {name, nature, parent_group_id}} — the whole chart of
+    accounts is small, one fetch covers every ledger's lookup below."""
+    rows = sb.table("ledger_groups").select("id, name, nature, parent_group_id").execute().data or []
+    return {r["id"]: r for r in rows}
+
+
+def _group_context(groups_map: dict, group_id: str | None) -> dict:
+    """The immediate group's name/nature, plus whether Sundry Debtors or
+    Sundry Creditors appears anywhere in this ledger's ancestry — i.e.
+    whether it's a PARTY ledger (a debtor/creditor relationship with a
+    person or company) as opposed to a control ledger like Cash, Bank,
+    an Income category, or an Expense category. This is what a bank
+    ledger was missing entirely before — nothing told the caller it was a
+    bank, so a "they owe you" debtor-style label got shown for it too."""
+    group = groups_map.get(group_id) if group_id else None
+    if not group:
+        return {"group_name": None, "group_nature": None, "is_party_ledger": False}
+
+    is_party = False
+    current_id = group_id
+    seen = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        g = groups_map.get(current_id)
+        if not g:
+            break
+        if g["name"] in PARTY_GROUP_NAMES:
+            is_party = True
+            break
+        current_id = g.get("parent_group_id")
+
+    return {"group_name": group["name"], "group_nature": group["nature"], "is_party_ledger": is_party}
+
+
+def _balance_label(group_nature: str | None, is_party_ledger: bool, balance_type: str) -> str:
+    """A ready-to-render phrase for a balance, correct for what this
+    ledger actually is — never a one-size-fits-all "they owe you"."""
+    if is_party_ledger:
+        if group_nature == "asset":        # Sundry Debtors / Transporters
+            return "They owe you" if balance_type == "dr" else "You owe them"
+        return "You owe them" if balance_type == "cr" else "They owe you"  # Sundry Creditors / Drivers / Labour
+    if group_nature == "asset":            # Cash-in-Hand, Bank Accounts, etc.
+        return "Balance available" if balance_type == "dr" else "Overdrawn"
+    if group_nature == "liability":
+        return "Outstanding balance" if balance_type == "cr" else "Overpaid"
+    if group_nature == "income":
+        return "Total earned" if balance_type == "cr" else "Net reversed"
+    if group_nature == "expense":
+        return "Total spent" if balance_type == "dr" else "Net refunded"
+    return "Balance"
 
 
 def _signed(amount: float, side: str) -> float:
@@ -63,6 +122,15 @@ def list_ledgers(branch_id: str | None = None, group_id: str | None = None,
         for r in rows:
             r["branch_name"] = branch_map.get(r["branch_id"])
 
+    # Tag each row with what TYPE of ledger it is (its group's name/nature,
+    # and whether it's a party/debtor-creditor ledger) — without this, the
+    # UI has no way to know a ledger is a Bank Account vs a Transporter,
+    # and ends up applying debtor-style "they owe you" wording to everything.
+    if rows:
+        groups_map = _all_groups_map(sb)
+        for r in rows:
+            r.update(_group_context(groups_map, r.get("group_id")))
+
     return {
         "status": "success",
         "data": {
@@ -77,7 +145,9 @@ def get_ledger(ledger_id: str) -> dict:
     res = sb.table("ledgers").select(LEDGER_COLS).eq("id", ledger_id).execute()
     if not res.data:
         return {"status": "error", "message": "Ledger not found", "status_code": 404}
-    return {"status": "success", "data": res.data[0]}
+    ledger = res.data[0]
+    ledger.update(_group_context(_all_groups_map(sb), ledger.get("group_id")))
+    return {"status": "success", "data": ledger}
 
 
 def create_ledger(data: dict, user_id: str | None = None) -> dict:
@@ -165,7 +235,7 @@ def set_ledger_status(ledger_id: str, is_active: bool, user_id: str | None = Non
 
 def get_ledger_balance(ledger_id: str) -> dict:
     sb = get_supabase()
-    ledger_res = sb.table("ledgers").select("id, name, opening_balance, opening_balance_type").eq("id", ledger_id).execute().data
+    ledger_res = sb.table("ledgers").select("id, name, group_id, opening_balance, opening_balance_type").eq("id", ledger_id).execute().data
     if not ledger_res:
         return {"status": "error", "message": "Ledger not found", "status_code": 404}
     ledger = ledger_res[0]
@@ -180,6 +250,8 @@ def get_ledger_balance(ledger_id: str) -> dict:
     closing_signed = opening_signed + dr_total - cr_total
     amount, side = _split_signed(closing_signed)
 
+    group_ctx = _group_context(_all_groups_map(sb), ledger.get("group_id"))
+
     return {
         "status": "success",
         "data": {
@@ -191,6 +263,8 @@ def get_ledger_balance(ledger_id: str) -> dict:
             "total_cr": round(cr_total, 2),
             "balance": amount,
             "balance_type": side,
+            **group_ctx,
+            "balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], side),
         },
     }
 
@@ -200,10 +274,11 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
     row is always correct against the ledger's TRUE opening balance, even
     when from_date/to_date only shows a slice of the period."""
     sb = get_supabase()
-    ledger_res = sb.table("ledgers").select("id, name, opening_balance, opening_balance_type").eq("id", ledger_id).execute().data
+    ledger_res = sb.table("ledgers").select("id, name, group_id, opening_balance, opening_balance_type").eq("id", ledger_id).execute().data
     if not ledger_res:
         return {"status": "error", "message": "Ledger not found", "status_code": 404}
     ledger = ledger_res[0]
+    group_ctx = _group_context(_all_groups_map(sb), ledger.get("group_id"))
 
     rows = (
         sb.table("voucher_entries")
@@ -242,6 +317,7 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
         })
 
     closing_amount, closing_side = _split_signed(running)
+    opening_amount, opening_side = _split_signed(_signed(float(ledger["opening_balance"]), ledger["opening_balance_type"]))
     return {
         "status": "success",
         "data": {
@@ -252,6 +328,9 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
             "entries": statement,
             "closing_balance": closing_amount,
             "closing_balance_type": closing_side,
+            **group_ctx,
+            "opening_balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], opening_side),
+            "closing_balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], closing_side),
         },
     }
 

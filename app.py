@@ -54,7 +54,7 @@ from services.bilty.gr_reservation_service import (
 )
 from services.bilty.master_data_service import (
     list_records, get_record, create_record, update_record, delete_record,
-    bulk_update, bulk_create, bulk_delete,
+    bulk_update, bulk_create, bulk_delete, get_directory,
 )
 from services.bilty.city_state_service import assign_state_to_city, bulk_assign_state_to_cities
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
@@ -882,6 +882,21 @@ async def master_bulk_delete(request: Request, entity: str = Path(...)):
         if not ids:
             return JSONResponse(content={"status": "error", "message": "ids array is required"}, status_code=400)
         result = await _run(bulk_delete, entity, ids)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/directory/lookup")
+async def directory_lookup(search: str = Query(None), limit: int = Query(200)):
+    """
+    One fast, unpaginated call for dropdown/autocomplete pickers — cities,
+    transports (with their city), and transport phone numbers. Pass
+    `search` to filter all three by the same text (city name, transport
+    name, or mobile number) instead of returning everything.
+    """
+    try:
+        result = await _run(get_directory, search, limit)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

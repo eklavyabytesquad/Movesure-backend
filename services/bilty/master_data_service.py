@@ -66,6 +66,51 @@ TABLE_CONFIG = {
 
 VALID_ENTITIES = set(TABLE_CONFIG.keys())
 
+DIRECTORY_LIMIT = 200  # dropdown/autocomplete use — not paginated, just capped
+
+
+# ── DIRECTORY (lightweight lookup for dropdowns/autocomplete) ──
+
+def get_directory(search: str = None, limit: int = DIRECTORY_LIMIT) -> dict:
+    """
+    One fast call for populating city / transport / phone-number pickers —
+    no pagination, just name + the one or two fields a dropdown needs.
+    Pass `search` to filter all three by the same text (city name,
+    transport name, or mobile number) instead of listing everything.
+    """
+    try:
+        sb = get_supabase()
+
+        cities_q = sb.table("cities").select("id, city_name, state_name").order("city_name").limit(limit)
+        if search:
+            cities_q = cities_q.ilike("city_name", f"%{search}%")
+        cities = cities_q.execute().data or []
+
+        transports_q = (
+            sb.table("transports")
+            .select("id, transport_name, city_name, mob_number")
+            .order("transport_name")
+            .limit(limit)
+        )
+        if search:
+            transports_q = transports_q.or_(
+                f"transport_name.ilike.%{search}%,city_name.ilike.%{search}%,mob_number.ilike.%{search}%"
+            )
+        transports = transports_q.execute().data or []
+
+        numbers = [
+            {"transport_id": t["id"], "transport_name": t["transport_name"], "mob_number": t["mob_number"]}
+            for t in transports
+            if t.get("mob_number")
+        ]
+
+        return {
+            "status": "success",
+            "data": {"cities": cities, "transports": transports, "numbers": numbers},
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
 
 # ── Resolve user UUIDs → names ────────────────────────────────
 
