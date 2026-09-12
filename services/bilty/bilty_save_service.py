@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from time import sleep
 from services.supabase_client import get_supabase
 from services.thread_pool import shared_pool
+from services.bilty.bilty_notification_service import send_first_booking_notification
 
 # Shared thread pool for background tasks (rate save, party auto-create)
 # Uses the centralized pool from services.thread_pool
@@ -462,6 +463,13 @@ def save_bilty(data: dict) -> dict:
                     # Auto-save rate
                     if saving_option == "SAVE" and data.get("rate"):
                         _auto_save_rate(_sb, branch_id, to_city_id, consignor_name, data.get("rate"))
+
+                    # "First booking" WhatsApp notification — new bilties only, never on edit
+                    if not bilty_id:
+                        notify_result = send_first_booking_notification(saved_bilty, from_city, to_city)
+                        if notify_result["status"] == "error":
+                            print(f"First-booking notification error: {notify_result['message']}")
+
                     return  # success — exit retry loop
                 except OSError as e:
                     if attempt == 0:
