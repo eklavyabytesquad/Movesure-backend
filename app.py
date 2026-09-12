@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Import service modules
 from auth.auth_service import get_jwt_token, load_jwt_token
 from services.ewaybill.ewaybill_service import get_ewaybill_details
+from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
 from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
 from services.ewaybill.transporter_id_service import update_transporter_id
 from services.ewaybill.transporter_update_with_pdf_service import update_transporter_and_get_pdf
@@ -362,6 +363,26 @@ async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(N
         return _response(result)
     except Exception as e:
         log.exception("Error in get_ewaybill: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/ewaybill/challan-bulk")
+async def get_ewaybill_challan_bulk(challan_no: str = Query(None), gstin: str = Query(None)):
+    """
+    Every EWB on a challan, fetched in one shot (in parallel) — for
+    printing/consolidating the whole challan's e-way bills into a single
+    PDF instead of one-at-a-time.
+    """
+    try:
+        if not challan_no or not gstin:
+            return JSONResponse(
+                content={"status": "error", "message": "Missing required parameters: challan_no and gstin"},
+                status_code=400,
+            )
+        result = await _run(get_challan_ewaybills_bulk, challan_no, gstin)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in get_ewaybill_challan_bulk: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
