@@ -1,23 +1,27 @@
 """
-Bulk E-Way Bill Details (per challan)
-=======================================
-The single-EWB endpoint (GET /api/ewaybill) is what the frontend's
-EWBPDFGenerator calls once per bilty to build one PDF page. Printing an
-entire challan today means opening that modal once per GR and clicking
-Print each time.
+Bulk E-Way Bill Details (per challan) — served from our own cache
+====================================================================
+Originally this called Masters India's GetEwayBillData once per EWB.
+That live govt lookup turned out to be unreliable in bulk (NIC's backend
+returns "NIC01: NIC responded with an error" fairly often, and it does
+that per-EWB regardless of whether calls are made in parallel or one at a
+time — confirmed live, not a concurrency/rate-limit artifact of this
+code).
 
-This collects every distinct EWB number riding on a challan (from
-transit_details -> bilty / station_bilty_summary, same join
-transit_service.get_transit_bilties() already does) and fetches all of
-their govt details in one call, in parallel, so the frontend can loop the
-results into ONE jsPDF document (one addEWBContent() call per item,
-pdf.addPage() between) instead of N separate ones.
+The frontend's Part-B screen already runs a full "Validate All" pass over
+every EWB on a challan and stores each govt response, TABLE, in
+ewb_validations.raw_result_metadata — including the full itemList /
+consignor / consignee / transporter payload the PDF generator needs, not
+just the pass/fail flag. So this now reads that cache directly instead of
+re-asking Masters India: it's already there, it's not going to change for
+an EWB once generated, and it isn't subject to NIC's live flakiness.
+
+If an EWB was never validated (no row yet, or validation itself failed),
+that one comes back as "not_validated" — the fix is to run Validate on
+it in the Part-B screen first, not to retry this endpoint.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from services.challan.transit_service import get_transit_bilties
-from services.ewaybill.ewaybill_service import get_ewaybill_details
-
-MAX_WORKERS = 6  # parallel govt-API calls — keeps a 20-30 GR challan well under the request timeout
+from services.supabase_client import get_supabase
 
 
 def _split_ewb_numbers(raw: str) -> list:
@@ -27,13 +31,39 @@ def _split_ewb_numbers(raw: str) -> list:
     return [p.strip() for p in str(raw).split(",") if p.strip()]
 
 
-def get_challan_ewaybills_bulk(challan_no: str, gstin: str) -> dict:
+def _extract_message(raw_result_metadata) -> dict | None:
     """
-    Returns every EWB on the challan, each fetched in full (same shape as
-    GET /api/ewaybill's `data`), plus which GR number(s) it belongs to.
+    raw_result_metadata was saved as our own backend's {"data": <masters
+    india response>} wrapper, and Masters India's own response is itself
+    {"data": {"results": {"message": {...}}}} — hence the double "data".
+    Walk it defensively so a slightly different save shape doesn't break this.
     """
-    if not challan_no or not gstin:
-        return {"status": "error", "message": "challan_no and gstin are required", "status_code": 400}
+    node = raw_result_metadata
+    for _ in range(8):
+        if not isinstance(node, dict):
+            return None
+        if "eway_bill_number" in node:
+            return node
+        if "message" in node and isinstance(node["message"], dict):
+            node = node["message"]
+            continue
+        if "results" in node:
+            node = node["results"]
+            continue
+        if "data" in node:
+            node = node["data"]
+            continue
+        return None
+    return None
+
+
+def get_challan_ewaybills_bulk(challan_no: str) -> dict:
+    """
+    Every EWB on the challan, pulled from our own validation cache
+    (ewb_validations) — no live Masters India/NIC call at all.
+    """
+    if not challan_no:
+        return {"status": "error", "message": "challan_no is required", "status_code": 400}
 
     transit_res = get_transit_bilties(challan_no, page_size=10000)
     if transit_res["status"] != "success":
@@ -54,28 +84,52 @@ def get_challan_ewaybills_bulk(challan_no: str, gstin: str) -> dict:
     if not ewb_to_grs:
         return {"status": "error", "message": f"No e-way bill numbers found on challan {challan_no}", "status_code": 404}
 
+    sb = get_supabase()
+    ewb_numbers = list(ewb_to_grs.keys())
+    cached = (
+        sb.table("ewb_validations")
+        .select("ewb_number, is_valid, validated_at, raw_result_metadata")
+        .in_("ewb_number", ewb_numbers)
+        .order("validated_at", desc=True)
+        .execute()
+        .data or []
+    )
+
+    # Keep only the latest cached row per EWB number.
+    latest_by_ewb = {}
+    for row in cached:
+        if row["ewb_number"] not in latest_by_ewb:
+            latest_by_ewb[row["ewb_number"]] = row
+
     results = []
+    for ewb_number, gr_nos in ewb_to_grs.items():
+        cached_row = latest_by_ewb.get(ewb_number)
+        message = _extract_message(cached_row["raw_result_metadata"]) if cached_row else None
 
-    def _fetch(ewb_number: str):
-        return ewb_number, get_ewaybill_details(ewb_number, gstin)
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(_fetch, ewb) for ewb in ewb_to_grs]
-        for future in as_completed(futures):
-            ewb_number, detail = future.result()
+        if message:
             results.append({
-                "ewb_number": ewb_number,
-                "gr_nos": ewb_to_grs[ewb_number],
-                "status": detail.get("status"),
-                "data": detail.get("data"),
-                "error": detail.get("message") if detail.get("status") == "error" else None,
+                "ewb_number": ewb_number, "gr_nos": gr_nos,
+                "status": "success", "message": message,
+                "validated_at": cached_row["validated_at"], "error": None,
+            })
+        elif cached_row:
+            results.append({
+                "ewb_number": ewb_number, "gr_nos": gr_nos,
+                "status": "error", "message": None, "validated_at": cached_row["validated_at"],
+                "error": "Validated but no usable detail was cached for this EWB",
+            })
+        else:
+            results.append({
+                "ewb_number": ewb_number, "gr_nos": gr_nos,
+                "status": "not_validated", "message": None, "validated_at": None,
+                "error": "Not validated yet — run Validate on this EWB in the Part-B screen first",
             })
 
-    # Stable order for printing: by the first GR number each EWB belongs to
     results.sort(key=lambda r: (r["gr_nos"][0] if r["gr_nos"] else "", r["ewb_number"]))
 
     success_count = sum(1 for r in results if r["status"] == "success")
-    failed = [r for r in results if r["status"] != "success"]
+    not_validated = [r["ewb_number"] for r in results if r["status"] == "not_validated"]
+    failed = [r for r in results if r["status"] == "error"]
 
     return {
         "status": "success",
@@ -83,6 +137,7 @@ def get_challan_ewaybills_bulk(challan_no: str, gstin: str) -> dict:
             "challan_no": challan_no,
             "total_ewb": len(results),
             "success_count": success_count,
+            "not_validated_count": len(not_validated),
             "failed_count": len(failed),
             "grs_without_ewb": grs_without_ewb,
             "results": results,

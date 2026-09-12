@@ -367,19 +367,21 @@ async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(N
 
 
 @app.get("/api/ewaybill/challan-bulk")
-async def get_ewaybill_challan_bulk(challan_no: str = Query(None), gstin: str = Query(None)):
+async def get_ewaybill_challan_bulk(challan_no: str = Query(None)):
     """
-    Every EWB on a challan, fetched in one shot (in parallel) — for
+    Every EWB on a challan, read from our own validation cache
+    (ewb_validations) — no live Masters India/NIC call — for
     printing/consolidating the whole challan's e-way bills into a single
-    PDF instead of one-at-a-time.
+    PDF instead of one-at-a-time. Run "Validate All" on the challan first
+    if any EWBs come back "not_validated".
     """
     try:
-        if not challan_no or not gstin:
+        if not challan_no:
             return JSONResponse(
-                content={"status": "error", "message": "Missing required parameters: challan_no and gstin"},
+                content={"status": "error", "message": "Missing required parameter: challan_no"},
                 status_code=400,
             )
-        result = await _run(get_challan_ewaybills_bulk, challan_no, gstin)
+        result = await _run(get_challan_ewaybills_bulk, challan_no)
         return _response(result)
     except Exception as e:
         log.exception("Error in get_ewaybill_challan_bulk: %s", e)
