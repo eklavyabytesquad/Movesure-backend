@@ -5,3 +5,5 @@ requests==2.31.0
 supabase==2.11.0
 python-dotenv==1.0.1
 qrcode[pil]
+reportlab==4.5.0
+Pillow==12.2.0
