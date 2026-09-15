@@ -6,11 +6,14 @@ dispatch status, e-way bill numbers + their validation status, Part-B
 (transporter update) history, truck/driver on the dispatching challan,
 and bilty-wise-kaat/pohonch/crossing details.
 
-Matches by consignor_name (ilike, since neither `bilty` nor
-`station_bilty_summary` has a real consignor_id FK — just free-text name/
-GST/number fields) — pass consignor_gst too to disambiguate two consignors
-with a similar name.
+Matches by consignor_gst (exact, case-insensitive) — the one field that
+actually identifies a consignor uniquely. `bilty.consignor_name` alone is
+free text (typos, "Pvt Ltd" vs "Pvt. Ltd.", etc.), so GSTIN is the only
+required input; consignor_name is accepted only as an optional extra
+narrower. `station_bilty_summary` has no GST column at all, so
+GSTIN-matched results only ever come from the `bilty` table.
 """
+from collections import Counter
 from services.supabase_client import get_supabase
 
 
@@ -28,15 +31,16 @@ def _resolve_cities(sb, city_ids: set) -> dict:
     return {r["id"]: r for r in rows}
 
 
-def get_consignor_bilties(consignor_name: str, consignor_gst: str = None,
+def get_consignor_bilties(consignor_gst: str, consignor_name: str = None,
                            from_date: str = None, to_date: str = None,
                            page: int = 1, page_size: int = 50) -> dict:
-    if not consignor_name:
-        return {"status": "error", "message": "consignor_name is required", "status_code": 400}
+    if not consignor_gst:
+        return {"status": "error", "message": "consignor_gst is required", "status_code": 400}
 
     sb = get_supabase()
 
-    # 1. Base bilties — both sources, same as every other cross-table bilty lookup in this codebase.
+    # GSTIN is the only reliable identifier — station_bilty_summary has no
+    # GST column at all, so results only ever come from the `bilty` table.
     b_query = (
         sb.table("bilty")
         .select(
@@ -45,11 +49,11 @@ def get_consignor_bilties(consignor_name: str, consignor_gst: str = None,
             "from_city_id, to_city_id, payment_mode, no_of_pkg, wt, total, pvt_marks, e_way_bill, "
             "branch_id, is_active"
         )
-        .ilike("consignor_name", f"%{consignor_name}%")
+        .ilike("consignor_gst", consignor_gst)  # exact match, case-insensitive, no wildcards
         .eq("is_active", True)
     )
-    if consignor_gst:
-        b_query = b_query.eq("consignor_gst", consignor_gst)
+    if consignor_name:
+        b_query = b_query.ilike("consignor_name", f"%{consignor_name}%")
     if from_date:
         b_query = b_query.gte("bilty_date", from_date)
     if to_date:
@@ -58,35 +62,15 @@ def get_consignor_bilties(consignor_name: str, consignor_gst: str = None,
     for r in bilty_rows:
         r["source_table"] = "bilty"
 
-    # station_bilty_summary has no consignor_gst column — skip it entirely
-    # when a GST was given to disambiguate, since it can't be verified there.
-    station_rows = []
-    if not consignor_gst:
-        s_query = (
-            sb.table("station_bilty_summary")
-            .select(
-                "id, gr_no, created_at, delivery_type, consignor, consignee, "
-                "transport_name, transport_gst, city_id, payment_status, no_of_packets, weight, "
-                "amount, pvt_marks, e_way_bill, branch_id"
-            )
-            .ilike("consignor", f"%{consignor_name}%")
-        )
-        station_rows = s_query.execute().data or []
-    for r in station_rows:
-        r["source_table"] = "station_bilty_summary"
-        # normalize field names to match `bilty`'s shape
-        r["consignor_name"] = r.pop("consignor")
-        r["consignor_gst"] = None
-        r["bilty_date"] = r.pop("created_at")
-        r["to_city_id"] = r.pop("city_id")
-        r["payment_mode"] = r.pop("payment_status")
-        r["no_of_pkg"] = r.pop("no_of_packets")
-        r["wt"] = r.pop("weight")
-        r["total"] = r.pop("amount")
-
-    all_rows = bilty_rows + station_rows
+    all_rows = bilty_rows
     if not all_rows:
-        return {"status": "success", "data": {"total": 0, "rows": [], "page": page, "page_size": page_size, "has_more": False}}
+        return {
+            "status": "success",
+            "data": {"consignor_gst": consignor_gst, "consignor_name": None,
+                      "total": 0, "rows": [], "page": page, "page_size": page_size, "has_more": False},
+        }
+
+    resolved_name = Counter(r["consignor_name"] for r in all_rows if r.get("consignor_name")).most_common(1)[0][0]
 
     all_rows.sort(key=lambda r: r["bilty_date"] or "", reverse=True)
     total = len(all_rows)
@@ -250,7 +234,8 @@ def get_consignor_bilties(consignor_name: str, consignor_gst: str = None,
     return {
         "status": "success",
         "data": {
-            "consignor_name": consignor_name,
+            "consignor_gst": consignor_gst,
+            "consignor_name": resolved_name,
             "total": total,
             "page": page,
             "page_size": page_size,

@@ -401,20 +401,20 @@ async def get_rate_list_pdf(consignor_name: str = Query(SAMPLE_CONSIGNOR)):
 
 @app.get("/api/consignor/bilties")
 async def get_consignor_bilties_endpoint(
-    consignor_name: str = Query(...),
-    consignor_gst: str = Query(None),
+    consignor_gst: str = Query(...),
+    consignor_name: str = Query(None),
     from_date: str = Query(None),
     to_date: str = Query(None),
     page: int = Query(1),
     page_size: int = Query(50),
 ):
     """
-    Every bilty for a consignor, with dispatch status, e-way bill validity,
-    Part-B (transporter update) history, truck/driver, and bilty-wise-kaat
-    (pohonch/crossing) details — one call.
+    Every bilty for a consignor, looked up by GSTIN alone, with dispatch
+    status, e-way bill validity, Part-B (transporter update) history,
+    truck/driver, and bilty-wise-kaat (pohonch/crossing) details.
     """
     try:
-        result = await _run(get_consignor_bilties, consignor_name, consignor_gst, from_date, to_date, page, page_size)
+        result = await _run(get_consignor_bilties, consignor_gst, consignor_name, from_date, to_date, page, page_size)
         return _response(result)
     except Exception as e:
         log.exception("Error in get_consignor_bilties_endpoint: %s", e)
