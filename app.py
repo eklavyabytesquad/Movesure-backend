@@ -19,7 +19,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # we log ourselve
 log = logging.getLogger("movesure")
 
 from fastapi import FastAPI, Request, Query, Path
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -32,6 +32,9 @@ from concurrent.futures import ThreadPoolExecutor
 from auth.auth_service import get_jwt_token, load_jwt_token
 from services.ewaybill.ewaybill_service import get_ewaybill_details
 from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
+from services.consignor.consignor_bilty_service import get_consignor_bilties
+from services.catalog.station_catalog_service import generate_station_catalog_pdf, SAMPLE_CONSIGNOR as CATALOG_SAMPLE_CONSIGNOR
+from services.catalog.rate_list_service import generate_rate_list_pdf, SAMPLE_CONSIGNOR
 from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
 from services.ewaybill.transporter_id_service import update_transporter_id
 from services.ewaybill.transporter_update_with_pdf_service import update_transporter_and_get_pdf
@@ -363,6 +366,58 @@ async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(N
         return _response(result)
     except Exception as e:
         log.exception("Error in get_ewaybill: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/catalog/station-catalog")
+async def get_station_catalog_pdf(consignor_name: str = Query(CATALOG_SAMPLE_CONSIGNOR)):
+    """Generates the S S Transport station catalog PDF (live city data) on demand, addressed to a customer."""
+    try:
+        pdf_bytes = await _run(generate_station_catalog_pdf, consignor_name)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="station_catalog_v2.pdf"'},
+        )
+    except Exception as e:
+        log.exception("Error in get_station_catalog_pdf: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/catalog/rate-list")
+async def get_rate_list_pdf(consignor_name: str = Query(SAMPLE_CONSIGNOR)):
+    """Professional per-consignor freight rate list PDF, from S S Transport Corporation."""
+    try:
+        pdf_bytes = await _run(generate_rate_list_pdf, consignor_name, None)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="rate_list.pdf"'},
+        )
+    except Exception as e:
+        log.exception("Error in get_rate_list_pdf: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/consignor/bilties")
+async def get_consignor_bilties_endpoint(
+    consignor_name: str = Query(...),
+    consignor_gst: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    page: int = Query(1),
+    page_size: int = Query(50),
+):
+    """
+    Every bilty for a consignor, with dispatch status, e-way bill validity,
+    Part-B (transporter update) history, truck/driver, and bilty-wise-kaat
+    (pohonch/crossing) details — one call.
+    """
+    try:
+        result = await _run(get_consignor_bilties, consignor_name, consignor_gst, from_date, to_date, page, page_size)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in get_consignor_bilties_endpoint: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
