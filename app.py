@@ -35,6 +35,7 @@ from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
 from services.consignor.consignor_bilty_service import get_consignor_bilties
 from services.catalog.station_catalog_service import generate_station_catalog_pdf, SAMPLE_CONSIGNOR as CATALOG_SAMPLE_CONSIGNOR
 from services.catalog.rate_list_service import generate_rate_list_pdf, SAMPLE_CONSIGNOR
+from services.catalog.tracking_card_service import generate_tracking_card_pdf, SAMPLE_GSTIN, SAMPLE_CONSIGNOR as TRACKING_SAMPLE_CONSIGNOR
 from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
 from services.ewaybill.transporter_id_service import update_transporter_id
 from services.ewaybill.transporter_update_with_pdf_service import update_transporter_and_get_pdf
@@ -50,6 +51,12 @@ from services.bilty.payment_tracking_service import (
     get_bilty_payment_details, get_station_bilty_payment_details
 )
 from services.bilty.consignor_rates_service import get_consignor_rates, get_default_rates, get_all_rates, calculate_dd_charge
+from services.bilty.consignee_rates_service import (
+    get_consignee_rates,
+    get_default_rates as get_consignee_default_rates,
+    get_all_rates as get_all_consignee_rates,
+    calculate_dd_charge as calculate_consignee_dd_charge,
+)
 from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
     complete_reservation, extend_reservation, get_branch_gr_status,
@@ -384,6 +391,21 @@ async def get_station_catalog_pdf(consignor_name: str = Query(CATALOG_SAMPLE_CON
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
+@app.get("/api/catalog/tracking-card")
+async def get_tracking_card_pdf(gstin: str = Query(SAMPLE_GSTIN), consignor_name: str = Query(TRACKING_SAMPLE_CONSIGNOR)):
+    """One-page tracking QR card for a consignor — links to /tracking/<gstin>."""
+    try:
+        pdf_bytes = await _run(generate_tracking_card_pdf, gstin, consignor_name)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="tracking_card.pdf"'},
+        )
+    except Exception as e:
+        log.exception("Error in get_tracking_card_pdf: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
 @app.get("/api/catalog/rate-list")
 async def get_rate_list_pdf(consignor_name: str = Query(SAMPLE_CONSIGNOR)):
     """Professional per-consignor freight rate list PDF, from S S Transport Corporation."""
@@ -707,6 +729,67 @@ async def bilty_calculate_dd(
     """
     try:
         result = await _run(calculate_dd_charge, consignor_id, destination_city_id, weight, no_of_pkg)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# RATE ENDPOINTS - Consignee profile rates & default rates
+# ============================================================
+
+
+@app.get("/api/bilty/rates/consignee/{consignee_id}")
+async def consignee_rates(consignee_id: str = Path(...)):
+    """Fetch all active rate profiles for a consignee (from consignee_bilty_profile)."""
+    try:
+        result = await _run(get_consignee_rates, consignee_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/rates/default/consignee")
+async def default_rates_consignee(branch_id: str = Query(...)):
+    """Fetch default city-wise rates for a branch (from rates table)."""
+    try:
+        result = await _run(get_consignee_default_rates, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/rates/all/consignee")
+async def all_rates_consignee(consignee_id: str = Query(...), branch_id: str = Query(...)):
+    """Fetch both consignee-specific and default rates in parallel."""
+    try:
+        result = await _run(get_all_consignee_rates, consignee_id, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/calculate/dd/consignee")
+async def bilty_calculate_dd_consignee(
+    consignee_id: str = Query(..., description="Consignee UUID"),
+    destination_city_id: str = Query(..., description="Destination city UUID (destination_station_id)"),
+    weight: float = Query(..., description="Gross weight in kg"),
+    no_of_pkg: int = Query(..., description="Number of packages (nag)"),
+):
+    """
+    Calculate door-delivery charge from the consignee bilty profile.
+
+    Logic:
+      1. Look up active consignee_bilty_profile row for consignee + destination city.
+      2. If dd_charge_per_kg > 0  →  dd = dd_charge_per_kg × weight
+         elif dd_charge_per_nag > 0 →  dd = dd_charge_per_nag × no_of_pkg
+         else                        →  dd = 0
+      3. Apply minimum of 150:  dd_charge = max(dd, 150)
+
+    Returns dd_charge, raw_calculated, basis, per-unit rates, and profile_id.
+    """
+    try:
+        result = await _run(calculate_consignee_dd_charge, consignee_id, destination_city_id, weight, no_of_pkg)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
