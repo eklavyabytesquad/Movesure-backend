@@ -32,7 +32,7 @@ from services.supabase_client import get_supabase
 
 # ── Customize here ──────────────────────────────────────────────────────────
 
-STATES = ["UTTAR PRADESH", "UTTARAKHAND", "DELHI", "BIHAR", "ODISHA", "ASSAM", "MANIPUR", "MIZORAM"]
+STATES = ["UTTAR PRADESH", "UTTARAKHAND", "DELHI", "BIHAR", "JHARKHAND", "ODISHA", "ASSAM", "MIZORAM", "MANIPUR"]
 
 # Shown on the cover/header as "Prepared for: M/s <name>" — this catalog is
 # handed to a specific customer. Pass a different consignor_name to

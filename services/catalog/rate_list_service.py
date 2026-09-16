@@ -56,10 +56,14 @@ SAMPLE_CONSIGNOR = "SPIDER METALS PRODUCTS PVT LTD"
 # "On Request" instead of a made-up number.
 RATES = {
     "UTTAR PRADESH": {"godown": "Rs. 6 / kg", "door_above_200kg": "Rs. 7 / kg", "door_below_200kg": "Rs. 7.5 / kg"},
-    "UTTARAKHAND":   {"godown": None, "door_above_200kg": None, "door_below_200kg": None},
-    "BIHAR":         {"godown": None, "door_above_200kg": None, "door_below_200kg": None},
-    "ODISHA":        {"godown": None, "door_above_200kg": None, "door_below_200kg": None},
-    "ASSAM":         {"godown": None, "door_above_200kg": None, "door_below_200kg": None},
+    "UTTARAKHAND":   {"godown": "Rs. 6 / kg", "door_above_200kg": "Rs. 7 / kg", "door_below_200kg": "Rs. 7.5 / kg"},
+    "DELHI":         {"godown": "Rs. 3 / kg", "door_above_200kg": "Rs. 4 / kg", "door_below_200kg": "Rs. 4 / kg"},
+    "BIHAR":         {"godown": "Rs. 9 / kg", "door_above_200kg": "Rs. 11 / kg", "door_below_200kg": "Rs. 11 / kg"},
+    "JHARKHAND":     {"godown": "Rs. 10 / kg", "door_above_200kg": "Rs. 11.5 / kg", "door_below_200kg": "Rs. 11.5 / kg"},
+    "ODISHA":        {"godown": "Rs. 10 / kg", "door_above_200kg": "Rs. 11.5 / kg", "door_below_200kg": "Rs. 11.5 / kg"},
+    "ASSAM":         {"godown": "Rs. 12 / kg", "door_above_200kg": "Rs. 13.5 / kg", "door_below_200kg": "Rs. 13.5 / kg"},
+    "MIZORAM":       {"godown": "Rs. 19 / kg", "door_above_200kg": None, "door_below_200kg": None},
+    "MANIPUR":       {"godown": "Rs. 20 / kg", "door_above_200kg": None, "door_below_200kg": None},
 }
 
 # ── Letterhead layout (all canvas-drawn, fixed coordinates) ────────────────
@@ -272,7 +276,7 @@ def generate_rate_list_pdf(consignor_name: str = SAMPLE_CONSIGNOR, rates: dict =
     story.append(rate_table)
 
     # ── Signature block ──
-    story.append(Spacer(1, 2.4 * cm))
+    story.append(Spacer(1, 0.8 * cm))
     sign_table = Table(
         [[Paragraph(COMPANY_NAME, sign_label_style)],
          [Spacer(1, 1.6 * cm)],
