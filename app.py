@@ -57,6 +57,7 @@ from services.bilty.consignee_rates_service import (
     get_all_rates as get_all_consignee_rates,
     calculate_dd_charge as calculate_consignee_dd_charge,
 )
+from services.bilty.company_kaat_report_service import get_company_kaat_report
 from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
     complete_reservation, extend_reservation, get_branch_gr_status,
@@ -764,6 +765,34 @@ async def all_rates_consignee(consignee_id: str = Query(...), branch_id: str = Q
     """Fetch both consignee-specific and default rates in parallel."""
     try:
         result = await _run(get_all_consignee_rates, consignee_id, branch_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# COMPANY KAAT REPORT - Public GR + kaat + dispatch + receiving report
+# ============================================================
+
+
+@app.get("/api/bilty/company-kaat-report")
+async def company_kaat_report(
+    company: str = Query("RGT", description="Consignor/consignee name filter, e.g. 'RGT' matches 'RGT Logistics'"),
+    search: str = Query(None, description="Extra free-text filter over gr_no, consignor, consignee, pvt_marks, contents"),
+    from_date: str = Query(None, description="bilty_date/created_at >= this date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="bilty_date/created_at <= this date (YYYY-MM-DD)"),
+    page: int = Query(1),
+    page_size: int = Query(50),
+):
+    """
+    Public, unauthenticated report: every GR (regular bilty + manual
+    station bilty) whose consignor/consignee name contains `company`,
+    enriched with kaat details, dispatch date (from challan), and
+    receiving/delivery details (POD + transit). Supports free-text
+    search and pagination so any external site can query it directly.
+    """
+    try:
+        result = await _run(get_company_kaat_report, company, search, from_date, to_date, page, page_size)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)

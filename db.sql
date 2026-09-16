@@ -221,6 +221,8 @@ CREATE TABLE public.bilty (
   payment_status character varying,
   advance_amount numeric,
   remaining_amount numeric,
+  short_packages_count integer NOT NULL DEFAULT 0,
+  is_advance_bilty boolean NOT NULL DEFAULT false,
   CONSTRAINT bilty_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.content_management (
@@ -384,6 +386,8 @@ CREATE TABLE public.station_bilty_summary (
   payment_details jsonb,
   advance_amount numeric,
   remaining_amount numeric,
+  short_packages_count integer NOT NULL DEFAULT 0,
+  is_advance_bilty boolean NOT NULL DEFAULT false,
   CONSTRAINT station_bilty_summary_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.monthly_bill (
@@ -786,7 +790,42 @@ CREATE TABLE public.consignor_bilty_profile (
   is_toll_tax_applicable boolean DEFAULT false,
   toll_tax_amount numeric DEFAULT 0,
   freight_minimum_amount numeric DEFAULT 0,
+  local_charge_per_nag numeric NOT NULL DEFAULT 0,
   CONSTRAINT consignor_bilty_profile_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.consignee_bilty_profile (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  consignee_id uuid NOT NULL,
+  destination_station_id uuid NOT NULL,
+  city_code text,
+  city_name text,
+  transport_name text,
+  transport_gst text,
+  rate numeric NOT NULL DEFAULT 0,
+  rate_unit text NOT NULL CHECK (rate_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text])),
+  minimum_weight_kg numeric DEFAULT 0,
+  labour_rate numeric NOT NULL DEFAULT 0,
+  labour_unit text CHECK (labour_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text, 'PER_BILTY'::text])),
+  dd_charge_per_kg numeric DEFAULT 0,
+  dd_charge_per_nag numeric DEFAULT 0,
+  receiving_slip_charge numeric DEFAULT 0,
+  bilty_charge numeric DEFAULT 0,
+  is_no_charge boolean DEFAULT false,
+  effective_from date NOT NULL DEFAULT CURRENT_DATE,
+  effective_to date,
+  is_active boolean DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp without time zone DEFAULT now(),
+  updated_at timestamp without time zone DEFAULT now(),
+  dd_print_charge_per_kg numeric,
+  dd_print_charge_per_nag numeric,
+  is_toll_tax_applicable boolean DEFAULT false,
+  toll_tax_amount numeric DEFAULT 0,
+  freight_minimum_amount numeric DEFAULT 0,
+  local_charge_per_nag numeric NOT NULL DEFAULT 0,
+  CONSTRAINT consignee_bilty_profile_pkey PRIMARY KEY (id),
+  CONSTRAINT consignee_bilty_profile_consignee_id_fkey FOREIGN KEY (consignee_id) REFERENCES public.consignees(id)
 );
 CREATE TABLE public.challan_expenses (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1421,4 +1460,119 @@ CREATE TABLE public.states (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT states_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.ledger_groups (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  name character varying NOT NULL,
+  parent_group_id uuid,
+  nature character varying NOT NULL CHECK (nature::text = ANY (ARRAY['asset'::character varying, 'liability'::character varying, 'income'::character varying, 'expense'::character varying, 'equity'::character varying]::text[])),
+  is_direct boolean NOT NULL DEFAULT false,
+  is_system boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT ledger_groups_pkey PRIMARY KEY (id),
+  CONSTRAINT ledger_groups_parent_group_id_fkey FOREIGN KEY (parent_group_id) REFERENCES public.ledger_groups(id),
+  CONSTRAINT ledger_groups_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.ledgers (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  branch_id uuid NOT NULL,
+  name character varying NOT NULL,
+  group_id uuid NOT NULL,
+  opening_balance numeric NOT NULL DEFAULT 0,
+  opening_balance_type character varying NOT NULL DEFAULT 'dr'::character varying CHECK (opening_balance_type::text = ANY (ARRAY['dr'::character varying, 'cr'::character varying]::text[])),
+  opening_balance_date date,
+  gstin character varying,
+  pan character varying,
+  address text,
+  phone character varying,
+  email character varying,
+  city_id uuid,
+  credit_period_days integer,
+  credit_limit numeric,
+  is_bill_wise boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid NOT NULL,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_default boolean NOT NULL DEFAULT false,
+  CONSTRAINT ledgers_pkey PRIMARY KEY (id),
+  CONSTRAINT ledgers_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
+  CONSTRAINT ledgers_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.ledger_groups(id),
+  CONSTRAINT ledgers_city_id_fkey FOREIGN KEY (city_id) REFERENCES public.cities(id),
+  CONSTRAINT ledgers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT ledgers_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.ledger_bill_references (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  ledger_id uuid NOT NULL,
+  reference_no character varying NOT NULL,
+  reference_date date NOT NULL DEFAULT CURRENT_DATE,
+  due_date date,
+  bill_amount numeric NOT NULL,
+  balance_amount numeric NOT NULL,
+  entry_type character varying NOT NULL CHECK (entry_type::text = ANY (ARRAY['dr'::character varying, 'cr'::character varying]::text[])),
+  source_table character varying,
+  source_id uuid,
+  is_settled boolean NOT NULL DEFAULT false,
+  created_by uuid NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  metadata jsonb,
+  CONSTRAINT ledger_bill_references_pkey PRIMARY KEY (id),
+  CONSTRAINT ledger_bill_references_ledger_id_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id),
+  CONSTRAINT ledger_bill_references_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.vouchers (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  branch_id uuid NOT NULL,
+  voucher_type character varying NOT NULL CHECK (voucher_type::text = ANY (ARRAY['payment'::character varying, 'receipt'::character varying, 'journal'::character varying, 'contra'::character varying, 'sales'::character varying, 'purchase'::character varying, 'debit_note'::character varying, 'credit_note'::character varying]::text[])),
+  voucher_no character varying NOT NULL,
+  voucher_date date NOT NULL DEFAULT CURRENT_DATE,
+  narration text,
+  reference_no character varying,
+  total_amount numeric NOT NULL DEFAULT 0,
+  is_active boolean NOT NULL DEFAULT true,
+  cancelled_at timestamp with time zone,
+  cancelled_by uuid,
+  cancel_reason text,
+  created_by uuid NOT NULL,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT vouchers_pkey PRIMARY KEY (id),
+  CONSTRAINT vouchers_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
+  CONSTRAINT vouchers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT vouchers_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id),
+  CONSTRAINT vouchers_cancelled_by_fkey FOREIGN KEY (cancelled_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.voucher_entries (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  voucher_id uuid NOT NULL,
+  ledger_id uuid NOT NULL,
+  entry_type character varying NOT NULL CHECK (entry_type::text = ANY (ARRAY['dr'::character varying, 'cr'::character varying]::text[])),
+  amount numeric NOT NULL CHECK (amount > 0::numeric),
+  narration text,
+  bill_reference_id uuid,
+  bill_allocation_type character varying CHECK (bill_allocation_type::text = ANY (ARRAY['new_ref'::character varying, 'agst_ref'::character varying, 'advance'::character varying, 'on_account'::character varying]::text[])),
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT voucher_entries_pkey PRIMARY KEY (id),
+  CONSTRAINT voucher_entries_ledger_id_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id),
+  CONSTRAINT voucher_entries_bill_reference_id_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id),
+  CONSTRAINT voucher_entries_voucher_id_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id)
+);
+CREATE TABLE public.ledger_audit_log (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  entity_type character varying NOT NULL CHECK (entity_type::text = ANY (ARRAY['ledger_group'::character varying, 'ledger'::character varying, 'voucher'::character varying, 'voucher_entry'::character varying, 'ledger_bill_reference'::character varying]::text[])),
+  entity_id uuid NOT NULL,
+  action character varying NOT NULL CHECK (action::text = ANY (ARRAY['create'::character varying, 'update'::character varying, 'deactivate'::character varying, 'reactivate'::character varying, 'cancel'::character varying, 'delete'::character varying]::text[])),
+  old_data jsonb,
+  new_data jsonb,
+  changed_by uuid,
+  changed_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT ledger_audit_log_pkey PRIMARY KEY (id),
+  CONSTRAINT ledger_audit_log_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.users(id)
 );
