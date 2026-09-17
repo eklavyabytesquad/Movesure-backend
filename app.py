@@ -58,6 +58,7 @@ from services.bilty.consignee_rates_service import (
     calculate_dd_charge as calculate_consignee_dd_charge,
 )
 from services.bilty.company_kaat_report_service import get_company_kaat_report
+from services.bilty.bulk_rate_service import bulk_set_rate, list_stations_for_owner
 from services.bilty.gr_reservation_service import (
     get_next_available_grs, reserve_gr, release_reservation,
     complete_reservation, extend_reservation, get_branch_gr_status,
@@ -819,6 +820,91 @@ async def bilty_calculate_dd_consignee(
     """
     try:
         result = await _run(calculate_consignee_dd_charge, consignee_id, destination_city_id, weight, no_of_pkg)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# BULK RATE ENDPOINTS - Set one rate for a consignor/consignee
+# across every station in one call (with optional exclusions)
+# ============================================================
+
+
+@app.get("/api/bilty/rates/consignor/{consignor_id}/stations")
+async def consignor_rate_stations(consignor_id: str = Path(...)):
+    """Every station + whether this consignor already has a rate profile for it."""
+    try:
+        result = await _run(list_stations_for_owner, "consignor_bilty_profile", "consignor_id", consignor_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/bilty/rates/consignee/{consignee_id}/stations")
+async def consignee_rate_stations(consignee_id: str = Path(...)):
+    """Every station + whether this consignee already has a rate profile for it."""
+    try:
+        result = await _run(list_stations_for_owner, "consignee_bilty_profile", "consignee_id", consignee_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/bilty/rates/consignor/bulk-set")
+async def consignor_rate_bulk_set(request: Request):
+    """
+    Set ONE rate for a consignor across every station in the system.
+
+    Body:
+      consignor_id (required), rate (required), rate_unit ('PER_KG'|'PER_NAG', default 'PER_NAG'),
+      exclude_city_ids (list of uuid, optional), exclude_city_names (list of str, optional),
+      created_by (uuid, optional), plus any bulk-appliable field (default_payment_mode,
+      labour_rate, labour_unit, dd_charge_per_kg, dd_charge_per_nag, local_charge_per_nag,
+      bilty_charge, transport_name, transport_gst, is_active, ...).
+
+    Updates the existing profile row for a station if one exists, otherwise creates it.
+    """
+    try:
+        body = await request.json()
+        consignor_id = body.get("consignor_id")
+        rate = body.get("rate")
+        rate_unit = body.get("rate_unit", "PER_NAG")
+        exclude_city_ids = body.get("exclude_city_ids")
+        exclude_city_names = body.get("exclude_city_names")
+        created_by = body.get("created_by")
+        extra_fields = {
+            k: v for k, v in body.items()
+            if k not in ("consignor_id", "rate", "rate_unit", "exclude_city_ids", "exclude_city_names", "created_by")
+        }
+        result = await _run(
+            bulk_set_rate, "consignor_bilty_profile", "consignor_id", consignor_id,
+            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by,
+        )
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/bilty/rates/consignee/bulk-set")
+async def consignee_rate_bulk_set(request: Request):
+    """Same as /api/bilty/rates/consignor/bulk-set but for a consignee (body uses consignee_id)."""
+    try:
+        body = await request.json()
+        consignee_id = body.get("consignee_id")
+        rate = body.get("rate")
+        rate_unit = body.get("rate_unit", "PER_NAG")
+        exclude_city_ids = body.get("exclude_city_ids")
+        exclude_city_names = body.get("exclude_city_names")
+        created_by = body.get("created_by")
+        extra_fields = {
+            k: v for k, v in body.items()
+            if k not in ("consignee_id", "rate", "rate_unit", "exclude_city_ids", "exclude_city_names", "created_by")
+        }
+        result = await _run(
+            bulk_set_rate, "consignee_bilty_profile", "consignee_id", consignee_id,
+            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by,
+        )
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
