@@ -4,9 +4,9 @@ Public read-only report: every GR (bilty) belonging to a given company name
 (matched against consignor/consignee, e.g. "RGT" -> "RGT Logistics"),
 across BOTH the regular `bilty` table and manually-entered `station_bilty_summary`
 rows, enriched with:
-  - kaat details (bilty_wise_kaat)
-  - dispatch details (challan_details, via kaat.challan_no)
-  - receiving/delivery details (pod_details + transit_details, by gr_no)
+  - pohonch_no + bilty_number (from bilty_wise_kaat)
+  - branch-to-branch transit + delivery details (from transit_details:
+    branch1 -> branch2 handoff, out-for-door-delivery, delivered-at-destination)
 
 Supports an additional free-text `search` on top of the company filter,
 an optional date range, and pagination.
@@ -106,16 +106,12 @@ def _fetch_sbs_matches(sb, company, search, from_date, to_date):
 
 
 def _fetch_kaat(sb, gr_nos):
+    """pohonch_no + bilty_number + the transport recorded on the kaat row."""
     kaat_map = {}
     for chunk in _chunks(gr_nos, 100):
         res = (
             sb.table("bilty_wise_kaat")
-            .select(
-                "gr_no, challan_no, destination_city_id, rate_type, rate_per_kg, "
-                "rate_per_pkg, kaat, pf, actual_kaat_rate, dd_chrg, bilty_chrg, "
-                "ewb_chrg, labour_chrg, other_chrg, pohonch_no, bilty_number, "
-                "crossing_challan_no"
-            )
+            .select("gr_no, pohonch_no, bilty_number, transport_id")
             .in_("gr_no", chunk)
             .execute()
         )
@@ -126,53 +122,31 @@ def _fetch_kaat(sb, gr_nos):
     return kaat_map
 
 
-def _fetch_challan_dispatch(sb, challan_nos):
-    dispatch_map = {}
-    if not challan_nos:
-        return dispatch_map
-    for chunk in _chunks(challan_nos, 100):
-        res = (
-            sb.table("challan_details")
-            .select("challan_no, date, is_dispatched, dispatch_date, is_received_at_hub, received_at_hub_timing")
-            .in_("challan_no", chunk)
-            .execute()
-        )
-        for row in res.data or []:
-            dispatch_map[row.get("challan_no", "")] = {
-                "challan_date": _safe(row.get("date")),
-                "is_dispatched": row.get("is_dispatched", False),
-                "dispatch_date": row.get("dispatch_date") or "",
-                "is_received_at_hub": row.get("is_received_at_hub", False),
-                "received_at_hub_timing": row.get("received_at_hub_timing") or "",
-            }
-    return dispatch_map
-
-
-def _fetch_pod(sb, gr_nos):
-    pod_map = {}
-    for chunk in _chunks(gr_nos, 100):
-        res = (
-            sb.table("pod_details")
-            .select("gr_no, pod_no, delivered_at, payment_mode, total_amount, amount_given")
-            .in_("gr_no", chunk)
-            .execute()
-        )
-        for row in res.data or []:
-            gr = row.get("gr_no")
-            if gr:
-                pod_map[gr] = row
-    return pod_map
+def _fetch_transports(sb, transport_ids):
+    transport_map = {}
+    if not transport_ids:
+        return transport_map
+    for chunk in _chunks(list(transport_ids), 100):
+        res = sb.table("transports").select("id, transport_name, gst_number, mob_number").in_("id", chunk).execute()
+        for t in res.data or []:
+            transport_map[t["id"]] = t
+    return transport_map
 
 
 def _fetch_transit(sb, gr_nos):
+    """Branch1 -> branch2 transit + delivery milestones, keyed by gr_no."""
     transit_map = {}
     for chunk in _chunks(gr_nos, 100):
         res = (
             sb.table("transit_details")
             .select(
-                "gr_no, is_delivered_at_destination, delivered_at_destination_date, "
+                "gr_no, challan_no, from_branch_id, to_branch_id, "
+                "is_out_of_delivery_from_branch1, out_of_delivery_from_branch1_date, "
+                "is_delivered_at_branch2, delivered_at_branch2_date, "
+                "is_out_of_delivery_from_branch2, out_of_delivery_from_branch2_date, "
+                "is_delivered_at_destination, delivered_at_destination_date, "
                 "out_for_door_delivery, out_for_door_delivery_date, "
-                "delivery_agent_name, delivery_agent_phone, vehicle_number"
+                "delivery_agent_name, delivery_agent_phone, vehicle_number, remarks"
             )
             .in_("gr_no", chunk)
             .execute()
@@ -215,10 +189,15 @@ def get_company_kaat_report(
     page_size: int = 50,
 ) -> dict:
     """
-    Full GR + kaat + dispatch + receiving report for every bilty (regular or
-    manual/station) whose consignor or consignee name contains `company`
-    (case-insensitive), optionally narrowed further by `search`, `from_date`
-    and `to_date` (matched against bilty_date / created_at), and paginated.
+    Full GR report for every bilty (regular or manual/station) whose
+    consignor or consignee name contains `company` (case-insensitive),
+    optionally narrowed further by `search`, `from_date` and `to_date`
+    (matched against bilty_date / created_at), and paginated.
+
+    Each row includes pohonch_no + bilty_number (from bilty_wise_kaat) and
+    the full branch1 -> branch2 transit + delivery timeline (from
+    transit_details): which branch it left from, which branch received it,
+    out-for-door-delivery, and final delivered-at-destination details.
     """
     try:
         if not company or not company.strip():
@@ -321,70 +300,68 @@ def get_company_kaat_report(
 
         gr_nos = [r["gr_no"] for r in page_rows]
         kaat_map = _fetch_kaat(sb, gr_nos)
-        challan_nos = list({k["challan_no"] for k in kaat_map.values() if k.get("challan_no")})
-        dispatch_map = _fetch_challan_dispatch(sb, challan_nos)
-        pod_map = _fetch_pod(sb, gr_nos)
         transit_map = _fetch_transit(sb, gr_nos)
 
         city_ids = {r["from_city_id"] for r in page_rows if r.get("from_city_id")} | \
                    {r["to_city_id"] for r in page_rows if r.get("to_city_id")}
         city_map = _fetch_cities(sb, city_ids)
+
         branch_ids = {r["branch_id"] for r in page_rows if r.get("branch_id")}
+        branch_ids |= {t["from_branch_id"] for t in transit_map.values() if t.get("from_branch_id")}
+        branch_ids |= {t["to_branch_id"] for t in transit_map.values() if t.get("to_branch_id")}
         branch_map = _fetch_branches(sb, branch_ids)
+
+        transport_ids = {k["transport_id"] for k in kaat_map.values() if k.get("transport_id")}
+        transport_map = _fetch_transports(sb, transport_ids)
+
+        def _branch(branch_id):
+            b = branch_map.get(branch_id, {}) if branch_id else {}
+            return _safe(b.get("branch_name")), _safe(b.get("branch_code"))
 
         result_rows = []
         for r in page_rows:
             gr = r["gr_no"]
             kaat = kaat_map.get(gr, {})
-            challan_no = _safe(kaat.get("challan_no"))
-            dispatch = dispatch_map.get(challan_no, {}) if challan_no else {}
-            pod = pod_map.get(gr, {})
             transit = transit_map.get(gr, {})
+            kaat_transport = transport_map.get(kaat.get("transport_id"), {}) if kaat.get("transport_id") else {}
             from_city = city_map.get(r["from_city_id"], {}) if r.get("from_city_id") else {}
             to_city = city_map.get(r["to_city_id"], {}) if r.get("to_city_id") else {}
-            branch = branch_map.get(r["branch_id"], {}) if r.get("branch_id") else {}
+            branch_name, branch_code = _branch(r.get("branch_id"))
+            branch1_name, branch1_code = _branch(transit.get("from_branch_id"))
+            branch2_name, branch2_code = _branch(transit.get("to_branch_id"))
 
             result_rows.append({
                 **{k: v for k, v in r.items() if k not in ("from_city_id", "to_city_id", "branch_id")},
-                "branch_name": _safe(branch.get("branch_name")),
-                "branch_code": _safe(branch.get("branch_code")),
+                "branch_name": branch_name,
+                "branch_code": branch_code,
                 "from_city": _safe(from_city.get("city_name")),
                 "to_city": _safe(to_city.get("city_name")),
-                # kaat details
-                "challan_no": challan_no,
-                "kaat": kaat.get("kaat", 0),
-                "kaat_pf": kaat.get("pf", 0),
-                "kaat_dd": kaat.get("dd_chrg", 0),
-                "kaat_rate": kaat.get("actual_kaat_rate", 0),
-                "rate_type": _safe(kaat.get("rate_type")),
-                "rate_per_kg": kaat.get("rate_per_kg", 0),
-                "rate_per_pkg": kaat.get("rate_per_pkg", 0),
-                "bilty_chrg": kaat.get("bilty_chrg", 0),
-                "ewb_chrg": kaat.get("ewb_chrg", 0),
-                "labour_chrg": kaat.get("labour_chrg", 0),
-                "other_chrg": kaat.get("other_chrg", 0),
+                # from bilty_wise_kaat
                 "pohonch_no": _safe(kaat.get("pohonch_no")),
                 "bilty_number": _safe(kaat.get("bilty_number")),
-                "crossing_challan_no": _safe(kaat.get("crossing_challan_no")),
-                # dispatch details (from challan)
-                "challan_date": dispatch.get("challan_date", ""),
-                "is_dispatched": dispatch.get("is_dispatched", False),
-                "dispatch_date": dispatch.get("dispatch_date", ""),
-                "is_received_at_hub": dispatch.get("is_received_at_hub", False),
-                "received_at_hub_timing": dispatch.get("received_at_hub_timing", ""),
-                # receiving / delivery details
-                "pod_no": _safe(pod.get("pod_no")),
-                "delivered_at": pod.get("delivered_at") or "",
-                "pod_payment_mode": _safe(pod.get("payment_mode")),
-                "pod_total_amount": pod.get("total_amount", 0),
-                "pod_amount_given": pod.get("amount_given", 0),
-                "is_delivered_at_destination": transit.get("is_delivered_at_destination", False),
-                "delivered_at_destination_date": transit.get("delivered_at_destination_date") or "",
+                "kaat_transport_name": _safe(kaat_transport.get("transport_name")),
+                "kaat_transport_gst": _safe(kaat_transport.get("gst_number")),
+                "kaat_transport_number": _safe(kaat_transport.get("mob_number")),
+                # branch-to-branch transit + delivery details (transit_details)
+                "challan_no": _safe(transit.get("challan_no")),
+                "branch1_name": branch1_name,
+                "branch1_code": branch1_code,
+                "is_out_of_delivery_from_branch1": transit.get("is_out_of_delivery_from_branch1", False),
+                "out_of_delivery_from_branch1_date": transit.get("out_of_delivery_from_branch1_date") or "",
+                "branch2_name": branch2_name,
+                "branch2_code": branch2_code,
+                "is_delivered_at_branch2": transit.get("is_delivered_at_branch2", False),
+                "delivered_at_branch2_date": transit.get("delivered_at_branch2_date") or "",
+                "is_out_of_delivery_from_branch2": transit.get("is_out_of_delivery_from_branch2", False),
+                "out_of_delivery_from_branch2_date": transit.get("out_of_delivery_from_branch2_date") or "",
                 "out_for_door_delivery": transit.get("out_for_door_delivery", False),
                 "out_for_door_delivery_date": transit.get("out_for_door_delivery_date") or "",
+                "is_delivered_at_destination": transit.get("is_delivered_at_destination", False),
+                "delivered_at_destination_date": transit.get("delivered_at_destination_date") or "",
                 "delivery_agent_name": _safe(transit.get("delivery_agent_name")),
                 "delivery_agent_phone": _safe(transit.get("delivery_agent_phone")),
                 "vehicle_number": _safe(transit.get("vehicle_number")),
+                "transit_remarks": _safe(transit.get("remarks")),
             })
 
         return {

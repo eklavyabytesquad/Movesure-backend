@@ -27,7 +27,7 @@ def get_consignor_rates(consignor_id: str) -> dict:
                 "effective_from, effective_to, is_active, "
                 "dd_print_charge_per_kg, dd_print_charge_per_nag, "
                 "is_toll_tax_applicable, toll_tax_amount, freight_minimum_amount, "
-                "local_charge_per_nag"
+                "local_charge_per_nag, default_payment_mode"
             )
             .eq("consignor_id", consignor_id)
             .eq("is_active", True)
