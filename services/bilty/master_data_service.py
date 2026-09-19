@@ -62,6 +62,16 @@ TABLE_CONFIG = {
         "order": "rate",
         "pk": "id",
     },
+    "branches": {
+        "table": "branches",
+        "columns": (
+            "id, branch_code, city_code, address, manager_id, branch_name, "
+            "default_bill_book_id, default_challan_book_id, is_active, created_at, updated_at"
+        ),
+        "search_cols": ["branch_code", "branch_name", "city_code"],
+        "order": "branch_name",
+        "pk": "id",
+    },
     "companies": {
         "table": "companies",
         "columns": (
