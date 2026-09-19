@@ -175,6 +175,7 @@ def create_challan(data: dict) -> dict:
             "created_by": data["created_by"],
             "created_at": now,
             "updated_at": now,
+            "company_id": data.get("company_id") or book.get("company_id"),
         }
 
         resp = sb.table("challan_details").insert(challan_data).execute()

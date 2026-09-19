@@ -62,6 +62,17 @@ TABLE_CONFIG = {
         "order": "rate",
         "pk": "id",
     },
+    "companies": {
+        "table": "companies",
+        "columns": (
+            "id, company_name, short_code, gst_number, pan, address, city, state, pincode, "
+            "mobile_number, alternate_number, email, bank_account_number, bank_ifsc_code, "
+            "logo_url, website, is_active, created_by, updated_by, created_at, updated_at"
+        ),
+        "search_cols": ["company_name", "short_code", "gst_number"],
+        "order": "company_name",
+        "pk": "id",
+    },
 }
 
 VALID_ENTITIES = set(TABLE_CONFIG.keys())

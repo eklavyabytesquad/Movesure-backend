@@ -8,7 +8,7 @@ from services.supabase_client import get_supabase
 COLS = (
     "id, prefix, from_number, to_number, digits, postfix, "
     "current_number, from_branch_id, to_branch_id, "
-    "branch_1, branch_2, branch_3, "
+    "branch_1, branch_2, branch_3, company_id, "
     "is_active, is_completed, is_fixed, auto_continue, "
     "created_by, created_at, updated_at"
 )

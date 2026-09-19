@@ -68,10 +68,19 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
         def fetch_bill_books():
             return (
                 sb.table("bill_books")
-                .select("id, prefix, from_number, to_number, digits, postfix, current_number, is_fixed, auto_continue, consignor_id")
+                .select("id, prefix, from_number, to_number, digits, postfix, current_number, is_fixed, auto_continue, consignor_id, company_id")
                 .eq("branch_id", branch_id)
                 .eq("is_active", True)
                 .eq("is_completed", False)
+                .execute()
+            ).data or []
+
+        def fetch_companies():
+            return (
+                sb.table("companies")
+                .select("id, company_name, short_code, gst_number, address, logo_url")
+                .eq("is_active", True)
+                .order("company_name")
                 .execute()
             ).data or []
 
@@ -85,6 +94,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
             shared_pool.submit(fetch_consignees): "consignees",
             shared_pool.submit(fetch_rates): "rates",
             shared_pool.submit(fetch_bill_books): "bill_books",
+            shared_pool.submit(fetch_companies): "companies",
         }
         for future in as_completed(futures):
             key = futures[future]
@@ -120,6 +130,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
                 "consignees": results["consignees"],
                 "rates": results["rates"],
                 "bill_books": results["bill_books"],
+                "companies": results["companies"],
             },
         }
 

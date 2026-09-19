@@ -289,9 +289,25 @@ def save_bilty(data: dict) -> dict:
         consignor_name = consignor_name_raw
         consignee_name = data.get("consignee_name")
 
+        # === RESOLVE COMPANY (which letterhead/book series this bilty prints under) ===
+        # Prefer an explicit company_id from the frontend; otherwise derive it
+        # from the chosen bill_book so a book's company always wins even if
+        # the caller doesn't know/send it.
+        company_id = data.get("company_id")
+        if not company_id and not bilty_id and data.get("bill_book_id"):
+            try:
+                bb_company = (
+                    sb.table("bill_books").select("company_id")
+                    .eq("id", data["bill_book_id"]).single().execute().data
+                )
+                company_id = bb_company.get("company_id") if bb_company else None
+            except Exception:
+                company_id = None
+
         # === BUILD BILTY RECORD ===
         bilty_row = {
             "branch_id": branch_id,
+            "company_id": company_id,
             "staff_id": data.get("staff_id"),
             "gr_no": gr_no,
             "bilty_date": data.get("bilty_date"),

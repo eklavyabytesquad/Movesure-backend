@@ -58,6 +58,30 @@ CREATE TABLE public.branches (
   CONSTRAINT branches_pkey PRIMARY KEY (id),
   CONSTRAINT branches_manager_id_fkey FOREIGN KEY (manager_id) REFERENCES public.users(id)
 );
+CREATE TABLE public.companies (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  company_name character varying NOT NULL,
+  short_code character varying,
+  gst_number character varying,
+  pan character varying,
+  address text,
+  city character varying,
+  state character varying,
+  pincode character varying,
+  mobile_number character varying,
+  alternate_number character varying,
+  email character varying,
+  bank_account_number character varying,
+  bank_ifsc_code character varying,
+  logo_url text,
+  website character varying,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT companies_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.bill_books (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   created_by uuid NOT NULL,
@@ -75,8 +99,10 @@ CREATE TABLE public.bill_books (
   is_completed boolean DEFAULT false,
   created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+  company_id uuid,
   CONSTRAINT bill_books_pkey PRIMARY KEY (id),
-  CONSTRAINT bill_books_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+  CONSTRAINT bill_books_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT bill_books_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
 );
 CREATE TABLE public.cities (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -223,7 +249,9 @@ CREATE TABLE public.bilty (
   remaining_amount numeric,
   short_packages_count integer NOT NULL DEFAULT 0,
   is_advance_bilty boolean NOT NULL DEFAULT false,
-  CONSTRAINT bilty_pkey PRIMARY KEY (id)
+  company_id uuid,
+  CONSTRAINT bilty_pkey PRIMARY KEY (id),
+  CONSTRAINT bilty_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
 );
 CREATE TABLE public.content_management (
   content_id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -286,13 +314,15 @@ CREATE TABLE public.challan_books (
   is_completed boolean DEFAULT false,
   created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+  company_id uuid,
   CONSTRAINT challan_books_pkey PRIMARY KEY (id),
   CONSTRAINT challan_books_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
   CONSTRAINT challan_books_from_branch_id_fkey FOREIGN KEY (from_branch_id) REFERENCES public.branches(id),
   CONSTRAINT challan_books_to_branch_id_fkey FOREIGN KEY (to_branch_id) REFERENCES public.branches(id),
   CONSTRAINT challan_books_branch_1_fkey FOREIGN KEY (branch_1) REFERENCES public.branches(id),
   CONSTRAINT challan_books_branch_2_fkey FOREIGN KEY (branch_2) REFERENCES public.branches(id),
-  CONSTRAINT challan_books_branch_3_fkey FOREIGN KEY (branch_3) REFERENCES public.branches(id)
+  CONSTRAINT challan_books_branch_3_fkey FOREIGN KEY (branch_3) REFERENCES public.branches(id),
+  CONSTRAINT challan_books_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
 );
 CREATE TABLE public.transit_details (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -348,13 +378,15 @@ CREATE TABLE public.challan_details (
   received_at_hub_timing timestamp with time zone,
   received_by_user uuid,
   truck_trip_id uuid,
+  company_id uuid,
   CONSTRAINT challan_details_pkey PRIMARY KEY (id),
   CONSTRAINT challan_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
   CONSTRAINT challan_details_truck_id_fkey FOREIGN KEY (truck_id) REFERENCES public.trucks(id),
   CONSTRAINT challan_details_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.staff(id),
   CONSTRAINT challan_details_driver_id_fkey FOREIGN KEY (driver_id) REFERENCES public.staff(id),
   CONSTRAINT challan_details_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
-  CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id)
+  CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id),
+  CONSTRAINT challan_details_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
 );
 CREATE TABLE public.station_bilty_summary (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -791,41 +823,8 @@ CREATE TABLE public.consignor_bilty_profile (
   toll_tax_amount numeric DEFAULT 0,
   freight_minimum_amount numeric DEFAULT 0,
   local_charge_per_nag numeric NOT NULL DEFAULT 0,
+  default_payment_mode text NOT NULL DEFAULT 'to-pay'::text CHECK (default_payment_mode = ANY (ARRAY['to-pay'::text, 'paid'::text])),
   CONSTRAINT consignor_bilty_profile_pkey PRIMARY KEY (id)
-);
-CREATE TABLE public.consignee_bilty_profile (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  consignee_id uuid NOT NULL,
-  destination_station_id uuid NOT NULL,
-  city_code text,
-  city_name text,
-  transport_name text,
-  transport_gst text,
-  rate numeric NOT NULL DEFAULT 0,
-  rate_unit text NOT NULL CHECK (rate_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text])),
-  minimum_weight_kg numeric DEFAULT 0,
-  labour_rate numeric NOT NULL DEFAULT 0,
-  labour_unit text CHECK (labour_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text, 'PER_BILTY'::text])),
-  dd_charge_per_kg numeric DEFAULT 0,
-  dd_charge_per_nag numeric DEFAULT 0,
-  receiving_slip_charge numeric DEFAULT 0,
-  bilty_charge numeric DEFAULT 0,
-  is_no_charge boolean DEFAULT false,
-  effective_from date NOT NULL DEFAULT CURRENT_DATE,
-  effective_to date,
-  is_active boolean DEFAULT true,
-  created_by uuid,
-  updated_by uuid,
-  created_at timestamp without time zone DEFAULT now(),
-  updated_at timestamp without time zone DEFAULT now(),
-  dd_print_charge_per_kg numeric,
-  dd_print_charge_per_nag numeric,
-  is_toll_tax_applicable boolean DEFAULT false,
-  toll_tax_amount numeric DEFAULT 0,
-  freight_minimum_amount numeric DEFAULT 0,
-  local_charge_per_nag numeric NOT NULL DEFAULT 0,
-  CONSTRAINT consignee_bilty_profile_pkey PRIMARY KEY (id),
-  CONSTRAINT consignee_bilty_profile_consignee_id_fkey FOREIGN KEY (consignee_id) REFERENCES public.consignees(id)
 );
 CREATE TABLE public.challan_expenses (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1575,4 +1574,39 @@ CREATE TABLE public.ledger_audit_log (
   changed_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT ledger_audit_log_pkey PRIMARY KEY (id),
   CONSTRAINT ledger_audit_log_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.consignee_bilty_profile (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  consignee_id uuid NOT NULL,
+  destination_station_id uuid NOT NULL,
+  city_code text,
+  city_name text,
+  transport_name text,
+  transport_gst text,
+  rate numeric NOT NULL DEFAULT 0,
+  rate_unit text NOT NULL CHECK (rate_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text])),
+  minimum_weight_kg numeric DEFAULT 0,
+  labour_rate numeric NOT NULL DEFAULT 0,
+  labour_unit text CHECK (labour_unit = ANY (ARRAY['PER_KG'::text, 'PER_NAG'::text, 'PER_BILTY'::text])),
+  dd_charge_per_kg numeric DEFAULT 0,
+  dd_charge_per_nag numeric DEFAULT 0,
+  receiving_slip_charge numeric DEFAULT 0,
+  bilty_charge numeric DEFAULT 0,
+  is_no_charge boolean DEFAULT false,
+  effective_from date NOT NULL DEFAULT CURRENT_DATE,
+  effective_to date,
+  is_active boolean DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp without time zone DEFAULT now(),
+  updated_at timestamp without time zone DEFAULT now(),
+  dd_print_charge_per_kg numeric,
+  dd_print_charge_per_nag numeric,
+  is_toll_tax_applicable boolean DEFAULT false,
+  toll_tax_amount numeric DEFAULT 0,
+  freight_minimum_amount numeric DEFAULT 0,
+  local_charge_per_nag numeric NOT NULL DEFAULT 0,
+  default_payment_mode text NOT NULL DEFAULT 'to-pay'::text CHECK (default_payment_mode = ANY (ARRAY['to-pay'::text, 'paid'::text])),
+  CONSTRAINT consignee_bilty_profile_pkey PRIMARY KEY (id),
+  CONSTRAINT consignee_bilty_profile_consignee_id_fkey FOREIGN KEY (consignee_id) REFERENCES public.consignees(id)
 );
