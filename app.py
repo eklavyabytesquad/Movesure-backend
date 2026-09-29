@@ -75,6 +75,10 @@ from services.bilty.transport_pending_grouped_service import get_grouped_transpo
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
 from services.kaat.kaat_update_service import bulk_update_kaat_rate, bulk_update_kaat_by_gr_nos, update_single_gr_kaat
 from services.kaat.kaat_bill_report_service import get_kaat_bill_report
+from services.kaat.kaat_rate_master_service import (
+    list_hub_rates, get_hub_rate, create_hub_rate, update_hub_rate,
+    delete_hub_rate, apply_hub_rate_to_bilties,
+)
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -2107,6 +2111,148 @@ async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to
         return _response(result)
     except Exception as e:
         log.exception("Error in kaat_single_gr_update: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# KAAT RATE MASTER (transport_hub_rates) — one station, many transports
+# ============================================================
+
+@app.get("/api/kaat/hub-rates")
+async def kaat_hub_rates_list(
+    station_name: str = Query(None, description="Partial city name filter"),
+    transport_gstin: str = Query(None, description="Exact GSTIN filter"),
+    is_active: bool = Query(None),
+):
+    """List kaat rate master rows. A station normally has several rows —
+    one per transport that services it."""
+    try:
+        result = await _run(list_hub_rates, station_name, transport_gstin, is_active)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rates_list: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/kaat/hub-rates/{rate_id}")
+async def kaat_hub_rate_get(rate_id: str = Path(...)):
+    try:
+        result = await _run(get_hub_rate, rate_id)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rate_get: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+class CreateHubRateRequest(BaseModel):
+    transport_name: str
+    transport_gstin: Optional[str] = None
+    transport_id: Optional[str] = None
+    destination_city_id: Optional[str] = None
+    station_name: Optional[str] = None
+    rate_per_kg: Optional[float] = None
+    rate_per_pkg: Optional[float] = None
+    pricing_mode: str = "per_kg"
+    min_charge: float = 0
+    goods_type: Optional[str] = None
+    bilty_chrg: Optional[float] = None
+    ewb_chrg: Optional[float] = None
+    other_chrg: Optional[float] = None
+    labour_chrg: Optional[float] = None
+    created_by: Optional[str] = None
+
+
+@app.post("/api/kaat/hub-rates")
+async def kaat_hub_rate_create(body: CreateHubRateRequest):
+    """
+    Add a transport's kaat rate for a station. To add a 2nd, 3rd... transport
+    for the SAME station, call this again with a different transport_name /
+    transport_gstin — every transport gets its own row, the station keeps
+    all of them active at once.
+
+    Pass either destination_city_id (exact) or station_name (resolved by
+    partial match — errors with `matches` if ambiguous).
+    """
+    try:
+        result = await _run(
+            create_hub_rate,
+            body.transport_name, body.transport_gstin, body.transport_id,
+            body.destination_city_id, body.station_name,
+            body.rate_per_kg, body.rate_per_pkg, body.pricing_mode, body.min_charge,
+            body.goods_type, body.bilty_chrg, body.ewb_chrg, body.other_chrg, body.labour_chrg,
+            body.created_by,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rate_create: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+class UpdateHubRateRequest(BaseModel):
+    transport_name: Optional[str] = None
+    transport_gstin: Optional[str] = None
+    transport_id: Optional[str] = None
+    goods_type: Optional[str] = None
+    pricing_mode: Optional[str] = None
+    rate_per_kg: Optional[float] = None
+    rate_per_pkg: Optional[float] = None
+    min_charge: Optional[float] = None
+    bilty_chrg: Optional[float] = None
+    ewb_chrg: Optional[float] = None
+    other_chrg: Optional[float] = None
+    labour_chrg: Optional[float] = None
+    is_active: Optional[bool] = None
+    updated_by: Optional[str] = None
+
+
+@app.put("/api/kaat/hub-rates/{rate_id}")
+async def kaat_hub_rate_update(rate_id: str = Path(...), body: UpdateHubRateRequest = None):
+    """Edit an existing rate. Only fields you pass are changed."""
+    if body is None:
+        return JSONResponse(content={"status": "error", "message": "Request body is required"}, status_code=400)
+    try:
+        updates = body.model_dump(exclude_unset=True, exclude={"updated_by"})
+        result = await _run(update_hub_rate, rate_id, updates, body.updated_by)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rate_update: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/kaat/hub-rates/{rate_id}")
+async def kaat_hub_rate_delete(rate_id: str = Path(...)):
+    """Soft-delete (is_active = false) — frees up the station+transport slot."""
+    try:
+        result = await _run(delete_hub_rate, rate_id)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rate_delete: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+class ApplyHubRateRequest(BaseModel):
+    from_date: str
+    to_date: str
+    new_kaat_dd: Optional[float] = None
+
+
+@app.post("/api/kaat/hub-rates/{rate_id}/apply")
+async def kaat_hub_rate_apply(rate_id: str = Path(...), body: ApplyHubRateRequest = None):
+    """
+    Push this master rate into bilty_wise_kaat: recalculates kaat/pf for
+    every bilty of this rate's transport, to this rate's station, within
+    the date range, and links each updated row back to this rate
+    (transport_hub_rate_id). This is the "update the kaat" step —
+    equivalent to /api/kaat/bulk-update but driven by a saved master rate
+    instead of typing the rate in each time.
+    """
+    if body is None:
+        return JSONResponse(content={"status": "error", "message": "Request body is required"}, status_code=400)
+    try:
+        result = await _run(apply_hub_rate_to_bilties, rate_id, body.from_date, body.to_date, body.new_kaat_dd)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in kaat_hub_rate_apply: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 

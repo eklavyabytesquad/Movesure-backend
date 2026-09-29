@@ -55,32 +55,11 @@ CREATE TABLE public.branches (
   is_active boolean DEFAULT true,
   created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+  default_challan_book_id uuid,
   CONSTRAINT branches_pkey PRIMARY KEY (id),
-  CONSTRAINT branches_manager_id_fkey FOREIGN KEY (manager_id) REFERENCES public.users(id)
-);
-CREATE TABLE public.companies (
-  id uuid NOT NULL DEFAULT uuid_generate_v4(),
-  company_name character varying NOT NULL,
-  short_code character varying,
-  gst_number character varying,
-  pan character varying,
-  address text,
-  city character varying,
-  state character varying,
-  pincode character varying,
-  mobile_number character varying,
-  alternate_number character varying,
-  email character varying,
-  bank_account_number character varying,
-  bank_ifsc_code character varying,
-  logo_url text,
-  website character varying,
-  is_active boolean NOT NULL DEFAULT true,
-  created_by uuid,
-  updated_by uuid,
-  created_at timestamp with time zone NOT NULL DEFAULT now(),
-  updated_at timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT companies_pkey PRIMARY KEY (id)
+  CONSTRAINT branches_manager_id_fkey FOREIGN KEY (manager_id) REFERENCES public.users(id),
+  CONSTRAINT branches_default_challan_book_id_fkey FOREIGN KEY (default_challan_book_id) REFERENCES public.challan_books(id),
+  CONSTRAINT branches_default_bill_book_id_fkey FOREIGN KEY (default_bill_book_id) REFERENCES public.bill_books(id)
 );
 CREATE TABLE public.bill_books (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -379,14 +358,16 @@ CREATE TABLE public.challan_details (
   received_by_user uuid,
   truck_trip_id uuid,
   company_id uuid,
+  challan_book_id uuid,
   CONSTRAINT challan_details_pkey PRIMARY KEY (id),
   CONSTRAINT challan_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
   CONSTRAINT challan_details_truck_id_fkey FOREIGN KEY (truck_id) REFERENCES public.trucks(id),
   CONSTRAINT challan_details_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.staff(id),
   CONSTRAINT challan_details_driver_id_fkey FOREIGN KEY (driver_id) REFERENCES public.staff(id),
   CONSTRAINT challan_details_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT challan_details_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id),
   CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id),
-  CONSTRAINT challan_details_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
+  CONSTRAINT challan_details_challan_book_id_fkey FOREIGN KEY (challan_book_id) REFERENCES public.challan_books(id)
 );
 CREATE TABLE public.station_bilty_summary (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -1609,4 +1590,28 @@ CREATE TABLE public.consignee_bilty_profile (
   default_payment_mode text NOT NULL DEFAULT 'to-pay'::text CHECK (default_payment_mode = ANY (ARRAY['to-pay'::text, 'paid'::text])),
   CONSTRAINT consignee_bilty_profile_pkey PRIMARY KEY (id),
   CONSTRAINT consignee_bilty_profile_consignee_id_fkey FOREIGN KEY (consignee_id) REFERENCES public.consignees(id)
+);
+CREATE TABLE public.companies (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  company_name character varying NOT NULL,
+  short_code character varying,
+  gst_number character varying,
+  pan character varying,
+  address text,
+  city character varying,
+  state character varying,
+  pincode character varying,
+  mobile_number character varying,
+  alternate_number character varying,
+  email character varying,
+  bank_account_number character varying,
+  bank_ifsc_code character varying,
+  logo_url text,
+  website character varying,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT companies_pkey PRIMARY KEY (id)
 );
