@@ -18,7 +18,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # we log ourselve
 
 log = logging.getLogger("movesure")
 
-from fastapi import FastAPI, Request, Query, Path
+from fastapi import FastAPI, Request, Query, Path, UploadFile, File
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -79,6 +79,7 @@ from services.kaat.kaat_rate_master_service import (
     list_hub_rates, get_hub_rate, create_hub_rate, update_hub_rate,
     delete_hub_rate, apply_hub_rate_to_bilties,
 )
+from services.bilty.transit_bilty_upload_service import upload_transit_bilty_image, get_transit_bilty_image
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -2253,6 +2254,46 @@ async def kaat_hub_rate_apply(rate_id: str = Path(...), body: ApplyHubRateReques
         return _response(result)
     except Exception as e:
         log.exception("Error in kaat_hub_rate_apply: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# TRANSIT BILTY IMAGE — works for both `bilty` and `station_bilty_summary`
+# ============================================================
+
+@app.post("/api/bilty/transit-image/{gr_no}")
+async def transit_bilty_image_upload(gr_no: str = Path(...), file: UploadFile = File(...)):
+    """
+    Upload a photo of the crossing/transit bilty for gr_no.
+
+    Looks gr_no up in `bilty` first, then `station_bilty_summary`, and
+    writes the uploaded file's public URL (stored in the `transit-bilty`
+    bucket) to whichever one matches — bilty.bilty_image or
+    station_bilty_summary.transit_bilty_image. The caller doesn't need to
+    know which table the GR belongs to.
+
+    multipart/form-data, field name `file`. Allowed types: jpeg, jpg, png,
+    webp. Max size: 10 MB.
+    """
+    try:
+        file_bytes = await file.read()
+        result = await _run(
+            upload_transit_bilty_image, gr_no, file_bytes, file.content_type, file.filename,
+        )
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in transit_bilty_image_upload: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty/transit-image/{gr_no}")
+async def transit_bilty_image_get(gr_no: str = Path(...)):
+    """Fetch the current transit bilty image URL for gr_no, if any is set."""
+    try:
+        result = await _run(get_transit_bilty_image, gr_no)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in transit_bilty_image_get: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
