@@ -21,6 +21,18 @@ BANK_GROUP_NAME = "Bank Accounts"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+MONTH_NAMES = [
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+    "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+]
+
+
+def month_name_from_date(date_str: str) -> str:
+    """'2026-01-15' -> 'JANUARY'. Used to auto-tag a bill with its billing
+    month when the caller doesn't pass one explicitly."""
+    month_num = int(date_str[5:7])
+    return MONTH_NAMES[month_num - 1]
+
 
 def today_ist() -> str:
     """'Today', in India time — NOT the server's local clock.

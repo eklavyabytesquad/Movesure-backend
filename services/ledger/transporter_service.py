@@ -12,7 +12,10 @@ from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
 from services.ledger.voucher_service import create_voucher
-from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
+from services.ledger.ledger_helpers import (
+    resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group,
+    today_ist, month_name_from_date,
+)
 
 TRANSPORTERS_GROUP_NAME = "Transporters"
 SUNDRY_DEBTORS_GROUP_NAME = "Sundry Debtors"
@@ -109,7 +112,19 @@ def get_transporter_detail(ledger_id: str) -> dict:
 
 def raise_pf_bill(ledger_id: str, data: dict) -> dict:
     """
-    data = { branch_id, amount, reference_no, due_date?, date?, narration?, created_by }
+    data = { branch_id, amount, reference_no, date?, due_date?,
+              bill_month?, bill_year?, narration?, created_by }
+
+    `date` is the day the bill itself is dated (used for both the voucher
+    and the bill reference's reference_date) — defaults to today (IST) if
+    omitted, exactly like every other ledger entry.
+
+    `bill_month`/`bill_year` are the billing PERIOD this bill is for
+    (e.g. "JANUARY" / 2026) — independent of `date`, since a January bill
+    is sometimes raised in early February. Auto-derived from `date` if you
+    don't pass them explicitly. Stored on the bill's `metadata` so
+    GET /api/ledger/transporters/summary can total bills up by month.
+
     Creates: Dr this transporter (a new bill)  /  Cr this branch's 'PF Income' ledger.
     """
     branch_id = data.get("branch_id")
@@ -123,19 +138,142 @@ def raise_pf_bill(ledger_id: str, data: dict) -> dict:
     if pf_income["status"] != "success":
         return pf_income
 
+    bill_date = data.get("date") or today_ist()
+    bill_month = (data.get("bill_month") or month_name_from_date(bill_date))
+    bill_month = str(bill_month).strip().upper()
+    bill_year = data.get("bill_year") or int(bill_date[:4])
+
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "sales",
-        "voucher_date": data.get("date") or today_ist(),
-        "narration": data.get("narration") or f"PF settlement bill {reference_no}",
+        "voucher_date": bill_date,
+        "narration": data.get("narration") or f"PF settlement bill {reference_no} ({bill_month} {bill_year})",
         "created_by": created_by,
         "entries": [
             {"ledger_id": ledger_id, "entry_type": "dr", "amount": amount,
              "bill_allocation_type": "new_ref",
-             "new_bill": {"reference_no": reference_no, "due_date": data.get("due_date")}},
+             "new_bill": {
+                 "reference_no": reference_no,
+                 "reference_date": bill_date,
+                 "due_date": data.get("due_date"),
+                 "metadata": {"bill_month": bill_month, "bill_year": bill_year},
+             }},
             {"ledger_id": pf_income["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
     })
+
+
+def get_transporters_summary(
+    branch_id: str | None = None,
+    bill_month: str | None = None,
+    bill_year: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict:
+    """
+    'How much does each transporter owe me' — every transporter under the
+    Transporters group, its live balance (always the true current amount,
+    unaffected by any filter below), PLUS how much was billed to them in a
+    given period, with a grand total across everyone.
+
+    Period filter — pass either:
+      bill_month ('JANUARY') + bill_year (2026)   — matches bills tagged
+                                                      with that period
+      from_date + to_date (YYYY-MM-DD)            — matches bills whose
+                                                      reference_date falls
+                                                      in the range
+    Omit both to skip period filtering (billed_in_period/outstanding_in_period
+    are then null for every row).
+    """
+    group_id = _transporters_group_id()
+    if not group_id:
+        return {"status": "error", "message": "Could not resolve the Transporters group", "status_code": 500}
+
+    sb = get_supabase()
+    q = (
+        sb.table("ledgers")
+        .select("id, name, branch_id, gstin, phone")
+        .eq("group_id", group_id)
+        .eq("is_active", True)
+        .order("name")
+    )
+    if branch_id:
+        q = q.eq("branch_id", branch_id)
+    ledgers = q.execute().data or []
+
+    if not branch_id and ledgers:
+        from services.branch_service import get_branch_name_map
+        branch_map = get_branch_name_map([l["branch_id"] for l in ledgers])
+        for l in ledgers:
+            l["branch_name"] = branch_map.get(l["branch_id"])
+
+    bill_month_norm = bill_month.strip().upper() if bill_month else None
+    use_period_filter = bool(bill_month_norm and bill_year) or bool(from_date or to_date)
+
+    rows = []
+    total_they_owe_you = 0.0
+    total_you_owe_them = 0.0
+    total_billed_in_period = 0.0
+    total_outstanding_in_period = 0.0
+
+    for ledger in ledgers:
+        bal = get_ledger_balance(ledger["id"])["data"]
+        if bal["balance_type"] == "dr":
+            total_they_owe_you += bal["balance"]
+        else:
+            total_you_owe_them += bal["balance"]
+
+        row = {**ledger, "balance": bal["balance"], "balance_type": bal["balance_type"]}
+
+        if use_period_filter:
+            bq = (
+                sb.table("ledger_bill_references")
+                .select("bill_amount, balance_amount, reference_date, metadata")
+                .eq("ledger_id", ledger["id"])
+                .eq("entry_type", "dr")
+            )
+            if bill_month_norm and bill_year:
+                bq = bq.eq("metadata->>bill_month", bill_month_norm).eq("metadata->>bill_year", str(bill_year))
+            if from_date:
+                bq = bq.gte("reference_date", from_date)
+            if to_date:
+                bq = bq.lte("reference_date", to_date)
+            bills = bq.execute().data or []
+
+            billed_in_period = round(sum(float(b["bill_amount"]) for b in bills), 2)
+            outstanding_in_period = round(sum(float(b["balance_amount"]) for b in bills), 2)
+            row["bills_in_period"] = len(bills)
+            row["billed_in_period"] = billed_in_period
+            row["outstanding_in_period"] = outstanding_in_period
+            total_billed_in_period += billed_in_period
+            total_outstanding_in_period += outstanding_in_period
+        else:
+            row["bills_in_period"] = None
+            row["billed_in_period"] = None
+            row["outstanding_in_period"] = None
+
+        rows.append(row)
+
+    return {
+        "status": "success",
+        "data": {
+            "transporters": rows,
+            "totals": {
+                "transporter_count": len(rows),
+                "total_they_owe_you": round(total_they_owe_you, 2),
+                "total_you_owe_them": round(total_you_owe_them, 2),
+                "net": round(total_they_owe_you - total_you_owe_them, 2),
+                "total_billed_in_period": round(total_billed_in_period, 2) if use_period_filter else None,
+                "total_outstanding_in_period": round(total_outstanding_in_period, 2) if use_period_filter else None,
+            },
+            "period": {
+                "bill_month": bill_month_norm,
+                "bill_year": bill_year,
+                "from_date": from_date,
+                "to_date": to_date,
+            } if use_period_filter else None,
+        },
+    }
 
 
 def collect_payment(ledger_id: str, data: dict) -> dict:

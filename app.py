@@ -136,6 +136,7 @@ from services.ledger.quick_entry_service import (
 from services.ledger.transporter_service import (
     list_transporters, create_transporter, get_transporter_detail, raise_pf_bill,
     collect_payment as collect_transporter_payment, give_payment as give_transporter_payment,
+    get_transporters_summary,
 )
 from services.ledger.truck_bhada_service import (
     list_drivers, create_driver, get_driver_detail, add_trip_bhada, pay_driver,
@@ -3406,6 +3407,29 @@ async def ledger_transporters_create(request: Request):
     try:
         data = await request.json()
         result = await _run(create_transporter, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/transporters/summary")
+async def ledger_transporters_summary(
+    branch_id: str = Query(None),
+    bill_month: str = Query(None, description="e.g. 'JANUARY' — pair with bill_year"),
+    bill_year: int = Query(None),
+    from_date: str = Query(None, description="YYYY-MM-DD — alternative to bill_month/bill_year"),
+    to_date: str = Query(None),
+):
+    """
+    Every transporter's live balance (how much they owe you right now),
+    plus — if you pass bill_month+bill_year or from_date+to_date — how
+    much was billed to them in that period and how much of it is still
+    outstanding. Includes a grand total across every transporter.
+    Registered BEFORE /api/ledger/transporters/{ledger_id} on purpose —
+    otherwise FastAPI would treat "summary" as a ledger_id.
+    """
+    try:
+        result = await _run(get_transporters_summary, branch_id, bill_month, bill_year, from_date, to_date)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
