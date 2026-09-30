@@ -88,6 +88,36 @@ def recompute_bill_balance(sb, bill_reference_id: str) -> None:
         return
     bill = bill_res[0]
 
+    # If the voucher that ORIGINALLY raised this bill (bill_allocation_type
+    # = 'new_ref') has since been cancelled, the bill itself is void — it
+    # should never show as outstanding again, matching the ledger's real
+    # balance (which already excludes cancelled vouchers' entries). Without
+    # this check, cancelling a pf-bill/payable-bill/bhada/labour-expense
+    # voucher left its bill permanently stuck "Open" with its original
+    # amount, even though the true balance had already moved on.
+    creating_entry = (
+        sb.table("voucher_entries")
+        .select("voucher_id")
+        .eq("bill_reference_id", bill_reference_id)
+        .eq("bill_allocation_type", "new_ref")
+        .limit(1)
+        .execute()
+        .data
+    )
+    if creating_entry:
+        creating_voucher = (
+            sb.table("vouchers").select("is_active")
+            .eq("id", creating_entry[0]["voucher_id"])
+            .execute().data
+        )
+        if creating_voucher and not creating_voucher[0]["is_active"]:
+            sb.table("ledger_bill_references").update({
+                "balance_amount": 0,
+                "is_settled": True,
+                "updated_at": _now(),
+            }).eq("id", bill_reference_id).execute()
+            return
+
     entries = (
         sb.table("voucher_entries")
         .select("amount, voucher_id")
