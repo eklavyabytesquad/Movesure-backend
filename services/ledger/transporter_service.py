@@ -21,6 +21,8 @@ TRANSPORTERS_GROUP_NAME = "Transporters"
 SUNDRY_DEBTORS_GROUP_NAME = "Sundry Debtors"
 PF_INCOME_LEDGER_NAME = "PF Income"
 DIRECT_INCOMES_GROUP_NAME = "Direct Incomes"
+TRANSPORT_CHARGES_EXPENSE_LEDGER_NAME = "Transport Charges"
+DIRECT_EXPENSES_GROUP_NAME = "Direct Expenses"
 
 
 def _transporters_group_id() -> str | None:
@@ -159,6 +161,56 @@ def raise_pf_bill(ledger_id: str, data: dict) -> dict:
                  "metadata": {"bill_month": bill_month, "bill_year": bill_year},
              }},
             {"ledger_id": pf_income["data"]["id"], "entry_type": "cr", "amount": amount},
+        ],
+    })
+
+
+def raise_payable_bill(ledger_id: str, data: dict) -> dict:
+    """
+    The reverse of raise_pf_bill — for when THIS transporter has billed
+    YOU (e.g. they carried freight for you and invoiced it), so you now
+    owe them, tracked as its own bill on the SAME transporter ledger —
+    you do not need a second ledger for this. A ledger's balance is just
+    a running total; "they owe you" (dr) and "you owe them" (cr) are the
+    two sides of the exact same account, not two different accounts.
+
+    data = { branch_id, amount, reference_no, date?, due_date?, narration?, created_by }
+
+    Creates: Dr this branch's 'Transport Charges' expense ledger  /
+             Cr this transporter (a new bill, entry_type='cr').
+
+    Settle it later with POST .../give — pass this bill's id as
+    bill_reference_id so the payment is tracked against this specific
+    bill instead of landing as an untracked on-account advance.
+    """
+    branch_id = data.get("branch_id")
+    amount = data.get("amount")
+    reference_no = data.get("reference_no")
+    created_by = data.get("created_by")
+    if not branch_id or not amount or not reference_no or not created_by:
+        return {"status": "error", "message": "branch_id, amount, reference_no and created_by are required", "status_code": 400}
+
+    transport_charges = get_or_create_named_ledger(branch_id, TRANSPORT_CHARGES_EXPENSE_LEDGER_NAME, DIRECT_EXPENSES_GROUP_NAME, created_by)
+    if transport_charges["status"] != "success":
+        return transport_charges
+
+    bill_date = data.get("date") or today_ist()
+
+    return create_voucher({
+        "branch_id": branch_id,
+        "voucher_type": "purchase",
+        "voucher_date": bill_date,
+        "narration": data.get("narration") or f"Bill received from transporter {reference_no}",
+        "created_by": created_by,
+        "entries": [
+            {"ledger_id": transport_charges["data"]["id"], "entry_type": "dr", "amount": amount},
+            {"ledger_id": ledger_id, "entry_type": "cr", "amount": amount,
+             "bill_allocation_type": "new_ref",
+             "new_bill": {
+                 "reference_no": reference_no,
+                 "reference_date": bill_date,
+                 "due_date": data.get("due_date"),
+             }},
         ],
     })
 
@@ -318,10 +370,14 @@ def collect_payment(ledger_id: str, data: dict) -> dict:
 
 def give_payment(ledger_id: str, data: dict) -> dict:
     """
-    Money GIVEN TO this transporter (e.g. an advance).
+    Money GIVEN TO this transporter — either a plain advance, or settling
+    a payable bill raised via raise_payable_bill (pass its bill_reference_id
+    to track this payment against that specific bill instead of an
+    untracked on-account advance).
     data = { branch_id, amount, payment_mode: 'cash'|'bank', bank_ledger_id?,
-              date?, narration?, created_by }
-    Creates: Dr this transporter (advance)  /  Cr <resolved Cash/Bank>.
+              bill_reference_id? (omit for a plain advance), date?, narration?, created_by }
+    Creates: Dr this transporter (advance, or against the given bill)  /
+             Cr <resolved Cash/Bank>.
     """
     branch_id = data.get("branch_id")
     amount = data.get("amount")
@@ -334,6 +390,14 @@ def give_payment(ledger_id: str, data: dict) -> dict:
     if resolved["status"] != "success":
         return resolved
 
+    bill_reference_id = data.get("bill_reference_id")
+    transporter_entry = {"ledger_id": ledger_id, "entry_type": "dr", "amount": amount}
+    if bill_reference_id:
+        transporter_entry["bill_allocation_type"] = "agst_ref"
+        transporter_entry["bill_reference_id"] = bill_reference_id
+    else:
+        transporter_entry["bill_allocation_type"] = "advance"
+
     return create_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
@@ -341,7 +405,7 @@ def give_payment(ledger_id: str, data: dict) -> dict:
         "narration": data.get("narration") or f"Payment given ({payment_mode})",
         "created_by": created_by,
         "entries": [
-            {"ledger_id": ledger_id, "entry_type": "dr", "amount": amount, "bill_allocation_type": "advance"},
+            transporter_entry,
             {"ledger_id": resolved["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
     })

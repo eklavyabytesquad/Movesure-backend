@@ -135,6 +135,7 @@ from services.ledger.quick_entry_service import (
 )
 from services.ledger.transporter_service import (
     list_transporters, create_transporter, get_transporter_detail, raise_pf_bill,
+    raise_payable_bill,
     collect_payment as collect_transporter_payment, give_payment as give_transporter_payment,
     get_transporters_summary,
 )
@@ -3449,6 +3450,19 @@ async def ledger_transporters_pf_bill(request: Request, ledger_id: str = Path(..
     try:
         data = await request.json()
         result = await _run(raise_pf_bill, ledger_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/transporters/{ledger_id}/payable-bill")
+async def ledger_transporters_payable_bill(request: Request, ledger_id: str = Path(...)):
+    """A bill THIS transporter raised against YOU — same ledger as pf-bill,
+    opposite direction. Settle it later via .../give with this bill's id
+    as bill_reference_id."""
+    try:
+        data = await request.json()
+        result = await _run(raise_payable_bill, ledger_id, data)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
