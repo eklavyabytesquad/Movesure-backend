@@ -38,7 +38,7 @@ BILL_COLS = (
     "total_pohonch, total_bilties, total_kaat, total_pf, total_dd, total_amount, "
     "total_paid_kaat, total_paid_to_transport, "
     "balance_on_us, balance_on_transport, "
-    "pohonch_data, transactions, bill_url, "
+    "pohonch_data, transactions, bill_url, crossing_challan_url, "
     "created_by, updated_by, created_at, updated_at, is_active"
 )
 
@@ -378,7 +378,7 @@ def add_transaction(bill_id: str, txn: dict) -> dict:
 # ── 4. UPDATE STATUS / BILL URL ───────────────────────────────────────────────
 
 def update_bill(bill_id: str, data: dict) -> dict:
-    """Update status, bill_url, or other editable fields."""
+    """Update status, bill_url, crossing_challan_url, or other editable fields."""
     try:
         sb = get_supabase()
 
@@ -386,7 +386,7 @@ def update_bill(bill_id: str, data: dict) -> dict:
         if not bill:
             return {"status": "error", "message": "Bill not found", "status_code": 404}
 
-        allowed = {"status", "bill_url", "updated_by"}
+        allowed = {"status", "bill_url", "crossing_challan_url", "updated_by"}
         if "status" in data and data["status"] not in ("draft","sent","partial_paid","paid","cancelled"):
             return {"status": "error", "message": "Invalid status", "status_code": 400}
 
