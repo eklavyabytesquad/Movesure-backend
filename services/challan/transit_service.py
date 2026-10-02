@@ -516,7 +516,7 @@ def list_delivery_status(
     is_delivered: bool = None,
     search: str = None,
     station_name: str = None,
-    exclude_series: str = None,
+    exclude_series: str = "B",
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
@@ -533,13 +533,13 @@ def list_delivery_status(
     search matches gr_no, challan_no, consignor, consignee, OR transport
     name — not just gr_no/challan_no.
 
-    exclude_series: comma-separated challan_no PREFIXES to drop entirely,
-    e.g. "B" excludes every B-series challan (B00076, B00089, ...) from
-    both the rows AND the total/total_amount counts — regardless of
-    source_table, so this applies equally to regular `bilty` rows and
-    "manual" station_bilty_summary rows. Use this to keep a delivery
-    screen scoped to the series you actually want (e.g. everything
-    EXCEPT the B-series) without a separate toggle per source table.
+    exclude_series: comma-separated challan_no PREFIXES to drop entirely —
+    defaults to "B" (the B-series is permanently hidden from this screen
+    by decision, not as a frontend toggle — pass "" explicitly to see
+    everything, or a different value to exclude some other series
+    instead). Applies to both rows AND the total/total_amount counts,
+    regardless of source_table — equally drops regular `bilty` rows and
+    "manual" station_bilty_summary rows on an excluded series.
 
     branch_id filters by to_branch_id — the HUB a bilty is routed
     through, NOT its actual destination. A bilty routed through the
@@ -613,25 +613,34 @@ def list_delivery_status(
             rows_full = rows
             total = resp.count if resp.count is not None else len(rows)
 
+        def _chunked_in(table, column, values, select_cols):
+            """.in_() blows up with 'Request Header Fields Too Large' (HTTP 431)
+            once `values` gets into the thousands (confirmed live: 3,282 bilty
+            ids in one call — a ~120KB query string). Chunk it, always."""
+            out = []
+            values = list(values)
+            for i in range(0, len(values), 200):
+                chunk = values[i:i + 200]
+                out.extend(sb.table(table).select(select_cols).in_(column, chunk).execute().data or [])
+            return out
+
         # Enrich — same pattern as get_transit_bilties, plus destination city name
         def _enrich(target_rows):
             bilty_ids = [r["bilty_id"] for r in target_rows if r.get("bilty_id")]
             bilty_map = {}
             if bilty_ids:
-                b_resp = sb.table("bilty").select(
+                rows_b = _chunked_in("bilty", "id", bilty_ids,
                     "id, gr_no, consignor_name, consignee_name, transport_name, "
-                    "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date"
-                ).in_("id", bilty_ids).execute()
-                bilty_map = {b["id"]: b for b in (b_resp.data or [])}
+                    "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date")
+                bilty_map = {b["id"]: b for b in rows_b}
 
             station_grs = [r["gr_no"] for r in target_rows if not r.get("bilty_id")]
             station_map = {}
             if station_grs:
-                s_resp = sb.table("station_bilty_summary").select(
+                rows_s = _chunked_in("station_bilty_summary", "gr_no", station_grs,
                     "gr_no, consignor, consignee, transport_name, "
-                    "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at"
-                ).in_("gr_no", station_grs).execute()
-                station_map = {s["gr_no"]: s for s in (s_resp.data or [])}
+                    "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at")
+                station_map = {s["gr_no"]: s for s in rows_s}
 
             for r in target_rows:
                 if r.get("bilty_id") and r["bilty_id"] in bilty_map:

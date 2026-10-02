@@ -1395,7 +1395,7 @@ async def transit_delivery_list(
     is_delivered: bool = Query(None, description="Omit for all, false for pending, true for delivered"),
     search: str = Query(None, description="Matches gr_no or challan_no"),
     station_name: str = Query(None, description="e.g. 'KANPUR' or 'KNP' — filters to bilties actually DESTINED there, not just routed through branch_id's hub"),
-    exclude_series: str = Query(None, description="Comma-separated challan_no prefixes to drop entirely, e.g. 'B' to exclude the whole B-series"),
+    exclude_series: str = Query("B", description="Comma-separated challan_no prefixes to drop entirely — defaults to 'B' (hidden by default); pass '' to see everything"),
     page: int = Query(1),
     page_size: int = Query(50),
 ):
