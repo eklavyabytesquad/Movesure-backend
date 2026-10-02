@@ -462,24 +462,84 @@ def bulk_remove_from_transit(transit_ids: list, challan_id: str = None) -> dict:
 
 # ── DELIVERY MANAGEMENT PAGE — list by branch + delivered/not-delivered ──
 
+def _resolve_city_gr_scope(sb, station_name: str) -> set | None:
+    """gr_nos whose real destination (bilty.to_city_id / station_bilty_summary.city_id)
+    matches station_name. Returns None if station_name is falsy, empty set if no match."""
+    if not station_name:
+        return None
+    city_rows = (
+        sb.table("cities").select("id")
+        .or_(f"city_name.ilike.%{station_name}%,city_code.ilike.{station_name}%")
+        .execute().data or []
+    )
+    city_ids = [c["id"] for c in city_rows]
+    if not city_ids:
+        return set()
+    scope = set()
+    for i in range(0, len(city_ids), 50):
+        chunk = city_ids[i:i + 50]
+        for r in sb.table("bilty").select("gr_no").in_("to_city_id", chunk).execute().data or []:
+            scope.add(r["gr_no"])
+        for r in sb.table("station_bilty_summary").select("gr_no").in_("city_id", chunk).execute().data or []:
+            scope.add(r["gr_no"])
+    return scope
+
+
+def _resolve_search_gr_scope(sb, search: str) -> set:
+    """gr_nos matching a free-text search — gr_no, challan_no, consignor,
+    consignee or transport name, on EITHER source table. A plain gr_no/
+    challan_no-only search (the old behavior) undersells what "search"
+    means to a user looking at a list with those other columns visible."""
+    s = search.strip()
+    scope = set()
+    for r in (
+        sb.table("bilty").select("gr_no")
+        .or_(f"gr_no.ilike.%{s}%,consignor_name.ilike.%{s}%,consignee_name.ilike.%{s}%,"
+             f"transport_name.ilike.%{s}%,pvt_marks.ilike.%{s}%")
+        .execute().data or []
+    ):
+        scope.add(r["gr_no"])
+    for r in (
+        sb.table("station_bilty_summary").select("gr_no")
+        .or_(f"gr_no.ilike.%{s}%,consignor.ilike.%{s}%,consignee.ilike.%{s}%,"
+             f"transport_name.ilike.%{s}%,pvt_marks.ilike.%{s}%")
+        .execute().data or []
+    ):
+        scope.add(r["gr_no"])
+    for r in sb.table("transit_details").select("gr_no").ilike("challan_no", f"%{s}%").execute().data or []:
+        scope.add(r["gr_no"])
+    return scope
+
+
 def list_delivery_status(
     branch_id: str = None,
     is_delivered: bool = None,
     search: str = None,
     station_name: str = None,
+    exclude_series: str = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
     """
     Transit rows filterable by delivery status — the data behind a
     "Delivery Management" page: show what's still pending so it can be
-    marked delivered inline.
+    marked delivered (or un-marked) inline.
 
     is_delivered:
       None  -> everything (both delivered and pending)
       False -> pending only (is_delivered_at_destination = false)
       True  -> delivered only
-    search matches gr_no or challan_no.
+
+    search matches gr_no, challan_no, consignor, consignee, OR transport
+    name — not just gr_no/challan_no.
+
+    exclude_series: comma-separated challan_no PREFIXES to drop entirely,
+    e.g. "B" excludes every B-series challan (B00076, B00089, ...) from
+    both the rows AND the total/total_amount counts — regardless of
+    source_table, so this applies equally to regular `bilty` rows and
+    "manual" station_bilty_summary rows. Use this to keep a delivery
+    screen scoped to the series you actually want (e.g. everything
+    EXCEPT the B-series) without a separate toggle per source table.
 
     branch_id filters by to_branch_id — the HUB a bilty is routed
     through, NOT its actual destination. A bilty routed through the
@@ -488,36 +548,37 @@ def list_delivery_status(
     city". Pass station_name (e.g. "KANPUR" or "KNP") to additionally
     restrict to bilties whose real destination city matches — that's the
     filter an actual "KNP Delivery" screen needs, not branch_id alone.
+
+    Response includes destination_city_name on every row, and
+    total_amount — the sum of `total` across every MATCHING row (not just
+    the current page) whenever station_name and/or search narrow the
+    result set. With neither set (browsing the whole unscoped table),
+    total_amount is omitted — summing tens of thousands of rows just to
+    show a header figure on an unscoped list isn't worth the query cost;
+    scope the list first.
     """
     try:
         sb = get_supabase()
 
-        # ── Resolve station_name -> the set of gr_nos actually destined
-        # there (via bilty.to_city_id / station_bilty_summary.city_id) ──
-        gr_scope = None
-        if station_name:
-            city_rows = (
-                sb.table("cities").select("id")
-                .or_(f"city_name.ilike.%{station_name}%,city_code.ilike.{station_name}%")
-                .execute().data or []
-            )
-            city_ids = [c["id"] for c in city_rows]
-            if not city_ids:
-                return {"status": "success", "data": {
-                    "rows": [], "page": page, "page_size": page_size, "total": 0, "has_more": False,
-                }}
-            gr_scope = set()
-            for i in range(0, len(city_ids), 50):
-                chunk = city_ids[i:i + 50]
-                for r in sb.table("bilty").select("gr_no").in_("to_city_id", chunk).execute().data or []:
-                    gr_scope.add(r["gr_no"])
-                for r in sb.table("station_bilty_summary").select("gr_no").in_("city_id", chunk).execute().data or []:
-                    gr_scope.add(r["gr_no"])
-            if not gr_scope:
-                return {"status": "success", "data": {
-                    "rows": [], "page": page, "page_size": page_size, "total": 0, "has_more": False,
-                }}
-            gr_scope = list(gr_scope)
+        city_scope = _resolve_city_gr_scope(sb, station_name)
+        search_scope = _resolve_search_gr_scope(sb, search) if search else None
+
+        if city_scope is not None and search_scope is not None:
+            gr_scope = city_scope & search_scope
+        elif city_scope is not None:
+            gr_scope = city_scope
+        elif search_scope is not None:
+            gr_scope = search_scope
+        else:
+            gr_scope = None
+
+        if gr_scope is not None and not gr_scope:
+            return {"status": "success", "data": {
+                "rows": [], "page": page, "page_size": page_size, "total": 0,
+                "has_more": False, "total_amount": 0,
+            }}
+
+        exclude_prefixes = [p.strip() for p in exclude_series.split(",") if p.strip()] if exclude_series else []
 
         def base_query(count=False):
             q = sb.table("transit_details").select(TRANSIT_COLS, count="exact") if count else sb.table("transit_details").select(TRANSIT_COLS)
@@ -525,74 +586,99 @@ def list_delivery_status(
                 q = q.eq("to_branch_id", branch_id)
             if is_delivered is not None:
                 q = q.eq("is_delivered_at_destination", is_delivered)
-            if search:
-                q = q.or_(f"gr_no.ilike.%{search}%,challan_no.ilike.%{search}%")
+            for prefix in exclude_prefixes:
+                q = q.not_.ilike("challan_no", f"{prefix}%")
             return q
 
+        compute_total_amount = gr_scope is not None
+
         if gr_scope is not None:
-            # gr_scope is bounded (one city's total bilty volume — a few
+            # gr_scope is bounded (one city/search's bilty volume — a few
             # thousand at most), so chunk the IN-list rather than fetching
             # every transit row and filtering client-side.
+            gr_list = list(gr_scope)
             matched = []
-            for i in range(0, len(gr_scope), 200):
-                chunk = gr_scope[i:i + 200]
+            for i in range(0, len(gr_list), 200):
+                chunk = gr_list[i:i + 200]
                 matched.extend(base_query().in_("gr_no", chunk).execute().data or [])
             matched.sort(key=lambda r: r.get("created_at") or "", reverse=True)
             total = len(matched)
             offset = (page - 1) * page_size
+            rows_full = matched  # keep full set around to sum total_amount after enrichment
             rows = matched[offset: offset + page_size]
         else:
             offset = (page - 1) * page_size
             resp = base_query(count=True).order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
             rows = resp.data or []
+            rows_full = rows
             total = resp.count if resp.count is not None else len(rows)
 
-        # Enrich — same pattern as get_transit_bilties
-        bilty_ids = [r["bilty_id"] for r in rows if r.get("bilty_id")]
-        bilty_map = {}
-        if bilty_ids:
-            b_resp = sb.table("bilty").select(
-                "id, gr_no, consignor_name, consignee_name, transport_name, "
-                "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date"
-            ).in_("id", bilty_ids).execute()
-            bilty_map = {b["id"]: b for b in (b_resp.data or [])}
+        # Enrich — same pattern as get_transit_bilties, plus destination city name
+        def _enrich(target_rows):
+            bilty_ids = [r["bilty_id"] for r in target_rows if r.get("bilty_id")]
+            bilty_map = {}
+            if bilty_ids:
+                b_resp = sb.table("bilty").select(
+                    "id, gr_no, consignor_name, consignee_name, transport_name, "
+                    "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date"
+                ).in_("id", bilty_ids).execute()
+                bilty_map = {b["id"]: b for b in (b_resp.data or [])}
 
-        station_grs = [r["gr_no"] for r in rows if not r.get("bilty_id")]
-        station_map = {}
-        if station_grs:
-            s_resp = sb.table("station_bilty_summary").select(
-                "gr_no, consignor, consignee, transport_name, "
-                "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at"
-            ).in_("gr_no", station_grs).execute()
-            station_map = {s["gr_no"]: s for s in (s_resp.data or [])}
+            station_grs = [r["gr_no"] for r in target_rows if not r.get("bilty_id")]
+            station_map = {}
+            if station_grs:
+                s_resp = sb.table("station_bilty_summary").select(
+                    "gr_no, consignor, consignee, transport_name, "
+                    "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at"
+                ).in_("gr_no", station_grs).execute()
+                station_map = {s["gr_no"]: s for s in (s_resp.data or [])}
 
+            for r in target_rows:
+                if r.get("bilty_id") and r["bilty_id"] in bilty_map:
+                    b = bilty_map[r["bilty_id"]]
+                    r.update({
+                        "consignor_name": b.get("consignor_name"), "consignee_name": b.get("consignee_name"),
+                        "transport_name": b.get("transport_name"), "payment_mode": b.get("payment_mode"),
+                        "no_of_pkg": b.get("no_of_pkg"), "wt": b.get("wt"), "total": b.get("total"),
+                        "to_city_id": b.get("to_city_id"), "e_way_bill": b.get("e_way_bill"),
+                        "pvt_marks": b.get("pvt_marks"), "contain": b.get("contain"),
+                        "bilty_date": b.get("bilty_date"), "source_table": "bilty",
+                    })
+                elif r["gr_no"] in station_map:
+                    s = station_map[r["gr_no"]]
+                    r.update({
+                        "consignor_name": s.get("consignor"), "consignee_name": s.get("consignee"),
+                        "transport_name": s.get("transport_name"), "payment_mode": s.get("payment_status"),
+                        "no_of_pkg": s.get("no_of_packets"), "wt": s.get("weight"), "total": s.get("amount"),
+                        "to_city_id": s.get("city_id"), "e_way_bill": s.get("e_way_bill"),
+                        "pvt_marks": s.get("pvt_marks"), "contain": s.get("contents"),
+                        "bilty_date": s.get("created_at"), "source_table": "station_bilty_summary",
+                    })
+
+        if compute_total_amount:
+            # rows_full's dicts are the SAME objects referenced by rows (a
+            # slice of rows_full) — enriching rows_full in place also
+            # enriches what's in `rows`, no re-slice needed.
+            _enrich(rows_full)
+            total_amount = round(sum(float(r.get("total") or 0) for r in rows_full), 2)
+        else:
+            _enrich(rows)
+            total_amount = None
+
+        # Destination city names, for every row that made it to this page
+        city_ids = {r["to_city_id"] for r in rows if r.get("to_city_id")}
+        city_name_map = {}
+        if city_ids:
+            for c in sb.table("cities").select("id, city_name").in_("id", list(city_ids)).execute().data or []:
+                city_name_map[c["id"]] = c["city_name"]
         for r in rows:
-            if r.get("bilty_id") and r["bilty_id"] in bilty_map:
-                b = bilty_map[r["bilty_id"]]
-                r.update({
-                    "consignor_name": b.get("consignor_name"), "consignee_name": b.get("consignee_name"),
-                    "transport_name": b.get("transport_name"), "payment_mode": b.get("payment_mode"),
-                    "no_of_pkg": b.get("no_of_pkg"), "wt": b.get("wt"), "total": b.get("total"),
-                    "to_city_id": b.get("to_city_id"), "e_way_bill": b.get("e_way_bill"),
-                    "pvt_marks": b.get("pvt_marks"), "contain": b.get("contain"),
-                    "bilty_date": b.get("bilty_date"), "source_table": "bilty",
-                })
-            elif r["gr_no"] in station_map:
-                s = station_map[r["gr_no"]]
-                r.update({
-                    "consignor_name": s.get("consignor"), "consignee_name": s.get("consignee"),
-                    "transport_name": s.get("transport_name"), "payment_mode": s.get("payment_status"),
-                    "no_of_pkg": s.get("no_of_packets"), "wt": s.get("weight"), "total": s.get("amount"),
-                    "to_city_id": s.get("city_id"), "e_way_bill": s.get("e_way_bill"),
-                    "pvt_marks": s.get("pvt_marks"), "contain": s.get("contents"),
-                    "bilty_date": s.get("created_at"), "source_table": "station_bilty_summary",
-                })
+            r["destination_city_name"] = city_name_map.get(r.get("to_city_id"), "")
 
-        return {
-            "status": "success",
-            "data": {"rows": rows, "page": page, "page_size": page_size,
-                     "total": total, "has_more": (offset + page_size) < total},
-        }
+        result = {"rows": rows, "page": page, "page_size": page_size,
+                  "total": total, "has_more": (offset + page_size) < total}
+        if total_amount is not None:
+            result["total_amount"] = total_amount
+        return {"status": "success", "data": result}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}
 
@@ -627,6 +713,30 @@ def mark_delivered(transit_id: str, user_id: str = None, remarks: str = None) ->
         err = result["data"]["failed"][0]["error"]
         return {"status": "error", "message": err, "status_code": 400}
     return {"status": "success", "message": f"GR {existing[0]['gr_no']} marked delivered"}
+
+
+def unmark_delivered(transit_id: str, user_id: str = None, remarks: str = None) -> dict:
+    """The 'undeliver' action — reverts a row marked delivered by mistake.
+    Symmetric to mark_delivered: checks the row exists first (same reason
+    — a false 'success' on a bad id is a silent lie), and is a no-op if
+    it's already not-delivered rather than an error."""
+    if not transit_id:
+        return {"status": "error", "message": "transit_id is required", "status_code": 400}
+
+    sb = get_supabase()
+    existing = sb.table("transit_details").select("id, gr_no, is_delivered_at_destination").eq("id", transit_id).execute().data
+    if not existing:
+        return {"status": "error", "message": f"Transit record '{transit_id}' not found", "status_code": 404}
+    if not existing[0]["is_delivered_at_destination"]:
+        return {"status": "success", "message": f"GR {existing[0]['gr_no']} was already not delivered"}
+
+    payload = {"is_delivered_at_destination": False, "delivered_at_destination_date": None, "updated_at": _now()}
+    if user_id:
+        payload["updated_by"] = user_id
+    if remarks:
+        payload["remarks"] = remarks
+    sb.table("transit_details").update(payload).eq("id", transit_id).execute()
+    return {"status": "success", "message": f"GR {existing[0]['gr_no']} marked NOT delivered"}
 
 
 # ── BULK UPDATE DELIVERY STATUS ───────────────────────────────

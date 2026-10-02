@@ -92,7 +92,7 @@ from services.challan.transit_service import (
     get_available_bilties, get_transit_bilties, add_to_transit,
     remove_from_transit, bulk_remove_from_transit,
     bulk_update_delivery_status, get_challan_stats,
-    list_delivery_status, mark_delivered,
+    list_delivery_status, mark_delivered, unmark_delivered,
 )
 from services.challan.truck_trip_service import (
     list_trips, get_trip, create_trip, update_trip, delete_trip,
@@ -1395,6 +1395,7 @@ async def transit_delivery_list(
     is_delivered: bool = Query(None, description="Omit for all, false for pending, true for delivered"),
     search: str = Query(None, description="Matches gr_no or challan_no"),
     station_name: str = Query(None, description="e.g. 'KANPUR' or 'KNP' — filters to bilties actually DESTINED there, not just routed through branch_id's hub"),
+    exclude_series: str = Query(None, description="Comma-separated challan_no prefixes to drop entirely, e.g. 'B' to exclude the whole B-series"),
     page: int = Query(1),
     page_size: int = Query(50),
 ):
@@ -1405,9 +1406,10 @@ async def transit_delivery_list(
     its actual destination (a bilty routed through Kanpur can still be
     headed to Banaras for onward forwarding). Add station_name to also
     require the bilty's real destination city match — that's what a
-    "KNP Delivery" screen actually wants."""
+    "KNP Delivery" screen actually wants. Add exclude_series to drop an
+    entire challan series (e.g. B-series) regardless of source table."""
     try:
-        result = await _run(list_delivery_status, branch_id, is_delivered, search, station_name, page, page_size)
+        result = await _run(list_delivery_status, branch_id, is_delivered, search, station_name, exclude_series, page, page_size)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -1420,6 +1422,17 @@ async def transit_mark_delivered(request: Request, transit_id: str = Path(...)):
     try:
         data = await request.json() if await request.body() else {}
         result = await _run(mark_delivered, transit_id, data.get("user_id"), data.get("remarks"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/transit/{transit_id}/undeliver")
+async def transit_mark_undelivered(request: Request, transit_id: str = Path(...)):
+    """Revert a row marked delivered by mistake. Body (optional): { user_id, remarks }."""
+    try:
+        data = await request.json() if await request.body() else {}
+        result = await _run(unmark_delivered, transit_id, data.get("user_id"), data.get("remarks"))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
