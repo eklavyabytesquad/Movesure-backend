@@ -110,6 +110,11 @@ from services.crossing_bill.crossing_bill_service import (
 from services.crossing_bill.nil_bilty_service import (
     find_nil_bilties, create_nil_catchup_pohonch, get_transport_challan_report,
 )
+from services.crossing_bill.bilty_crossing_bill_service import (
+    create_bilty_crossing_bill, get_bilty_crossing_bill, list_bilty_crossing_bills,
+    update_bilty_crossing_bill, delete_bilty_crossing_bill,
+    search_transporters, preview_gr,
+)
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
     update_pohonch, sign_pohonch, unsign_pohonch, delete_pohonch,
@@ -1857,6 +1862,97 @@ async def crossing_bill_recalculate(request: Request, bill_id: str = Path(...)):
         except Exception:
             pass
         result = await _run(recalculate_crossing_bill, bill_id, data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# BILTY CROSSING BILL — bill built directly from bilties, no pohonch
+# required (crossing proof = bilty_wise_kaat.bilty_number + photo URL)
+# ============================================================
+
+@app.post("/api/bilty-crossing-bill")
+async def bilty_crossing_bill_create(request: Request):
+    """
+    Body: { transport_name, transport_gstin?, bill_month (1-12), bill_year,
+             gr_nos: [...], created_by? }
+    Pulls crossing proof (bilty_number) + kaat/pf from bilty_wise_kaat,
+    and amount/consignor/destination/photo URL from bilty or
+    station_bilty_summary, for every gr_no — no pohonch involved.
+    """
+    try:
+        data = await request.json()
+        result = await _run(create_bilty_crossing_bill, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty-crossing-bill")
+async def bilty_crossing_bill_list(
+    transport_gstin: str = Query(None),
+    bill_month: int = Query(None),
+    bill_year: int = Query(None),
+    is_active: bool = Query(True),
+    page: int = Query(1),
+    page_size: int = Query(40),
+):
+    try:
+        result = await _run(list_bilty_crossing_bills, transport_gstin, bill_month, bill_year, is_active, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty-crossing-bill/search-transporters")
+async def bilty_crossing_bill_search_transporters(q: str = Query(..., min_length=2), limit: int = Query(20)):
+    """Transporter search box — autocomplete by name or GSTIN, deduped to
+    one row per real transporter. Registered BEFORE /{bill_id} on purpose,
+    same reason as every other literal-vs-{id} route in this file."""
+    try:
+        result = await _run(search_transporters, q, limit)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty-crossing-bill/gr-preview/{gr_no}")
+async def bilty_crossing_bill_gr_preview(gr_no: str = Path(...)):
+    """GR search box — returns the exact shape that will end up in the
+    bill's metadata if this GR is added, so the preview is never a lie."""
+    try:
+        result = await _run(preview_gr, gr_no)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty-crossing-bill/{bill_id}")
+async def bilty_crossing_bill_get(bill_id: str = Path(...)):
+    try:
+        result = await _run(get_bilty_crossing_bill, bill_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/bilty-crossing-bill/{bill_id}")
+async def bilty_crossing_bill_update(request: Request, bill_id: str = Path(...)):
+    """Save pdf_url (after uploading the bill PDF) or correct transport_name/transport_gstin.
+    Body: { pdf_url?, transport_name?, transport_gstin?, updated_by? }"""
+    try:
+        data = await request.json()
+        result = await _run(update_bilty_crossing_bill, bill_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.delete("/api/bilty-crossing-bill/{bill_id}")
+async def bilty_crossing_bill_delete(bill_id: str = Path(...), updated_by: str = Query(None)):
+    try:
+        result = await _run(delete_bilty_crossing_bill, bill_id, updated_by)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
