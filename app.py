@@ -1394,13 +1394,20 @@ async def transit_delivery_list(
     branch_id: str = Query(None),
     is_delivered: bool = Query(None, description="Omit for all, false for pending, true for delivered"),
     search: str = Query(None, description="Matches gr_no or challan_no"),
+    station_name: str = Query(None, description="e.g. 'KANPUR' or 'KNP' — filters to bilties actually DESTINED there, not just routed through branch_id's hub"),
     page: int = Query(1),
     page_size: int = Query(50),
 ):
-    """Delivery Management page — list transit rows for a branch, filtered
-    by delivery status. Pass is_delivered=false for the 'needs action' view."""
+    """Delivery Management page — list transit rows filtered by delivery
+    status. Pass is_delivered=false for the 'needs action' view.
+
+    branch_id alone filters by which HUB a bilty transits through — NOT
+    its actual destination (a bilty routed through Kanpur can still be
+    headed to Banaras for onward forwarding). Add station_name to also
+    require the bilty's real destination city match — that's what a
+    "KNP Delivery" screen actually wants."""
     try:
-        result = await _run(list_delivery_status, branch_id, is_delivered, search, page, page_size)
+        result = await _run(list_delivery_status, branch_id, is_delivered, search, station_name, page, page_size)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

@@ -466,35 +466,86 @@ def list_delivery_status(
     branch_id: str = None,
     is_delivered: bool = None,
     search: str = None,
+    station_name: str = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
     """
-    Transit rows for ONE destination branch (to_branch_id), filterable by
-    delivery status — the data behind a "Delivery Management" page: show
-    what's still pending so it can be marked delivered inline.
+    Transit rows filterable by delivery status — the data behind a
+    "Delivery Management" page: show what's still pending so it can be
+    marked delivered inline.
 
     is_delivered:
       None  -> everything (both delivered and pending)
       False -> pending only (is_delivered_at_destination = false)
       True  -> delivered only
     search matches gr_no or challan_no.
+
+    branch_id filters by to_branch_id — the HUB a bilty is routed
+    through, NOT its actual destination. A bilty routed through the
+    Kanpur hub branch can still be headed to Banaras, Prayagraj, etc. for
+    onward forwarding — branch_id alone does not mean "delivered IN this
+    city". Pass station_name (e.g. "KANPUR" or "KNP") to additionally
+    restrict to bilties whose real destination city matches — that's the
+    filter an actual "KNP Delivery" screen needs, not branch_id alone.
     """
     try:
         sb = get_supabase()
-        q = sb.table("transit_details").select(TRANSIT_COLS, count="exact")
-        if branch_id:
-            q = q.eq("to_branch_id", branch_id)
-        if is_delivered is not None:
-            q = q.eq("is_delivered_at_destination", is_delivered)
-        if search:
-            q = q.or_(f"gr_no.ilike.%{search}%,challan_no.ilike.%{search}%")
 
-        offset = (page - 1) * page_size
-        q = q.order("created_at", desc=True).range(offset, offset + page_size - 1)
-        resp = q.execute()
-        rows = resp.data or []
-        total = resp.count if resp.count is not None else len(rows)
+        # ── Resolve station_name -> the set of gr_nos actually destined
+        # there (via bilty.to_city_id / station_bilty_summary.city_id) ──
+        gr_scope = None
+        if station_name:
+            city_rows = (
+                sb.table("cities").select("id")
+                .or_(f"city_name.ilike.%{station_name}%,city_code.ilike.{station_name}%")
+                .execute().data or []
+            )
+            city_ids = [c["id"] for c in city_rows]
+            if not city_ids:
+                return {"status": "success", "data": {
+                    "rows": [], "page": page, "page_size": page_size, "total": 0, "has_more": False,
+                }}
+            gr_scope = set()
+            for i in range(0, len(city_ids), 50):
+                chunk = city_ids[i:i + 50]
+                for r in sb.table("bilty").select("gr_no").in_("to_city_id", chunk).execute().data or []:
+                    gr_scope.add(r["gr_no"])
+                for r in sb.table("station_bilty_summary").select("gr_no").in_("city_id", chunk).execute().data or []:
+                    gr_scope.add(r["gr_no"])
+            if not gr_scope:
+                return {"status": "success", "data": {
+                    "rows": [], "page": page, "page_size": page_size, "total": 0, "has_more": False,
+                }}
+            gr_scope = list(gr_scope)
+
+        def base_query(count=False):
+            q = sb.table("transit_details").select(TRANSIT_COLS, count="exact") if count else sb.table("transit_details").select(TRANSIT_COLS)
+            if branch_id:
+                q = q.eq("to_branch_id", branch_id)
+            if is_delivered is not None:
+                q = q.eq("is_delivered_at_destination", is_delivered)
+            if search:
+                q = q.or_(f"gr_no.ilike.%{search}%,challan_no.ilike.%{search}%")
+            return q
+
+        if gr_scope is not None:
+            # gr_scope is bounded (one city's total bilty volume — a few
+            # thousand at most), so chunk the IN-list rather than fetching
+            # every transit row and filtering client-side.
+            matched = []
+            for i in range(0, len(gr_scope), 200):
+                chunk = gr_scope[i:i + 200]
+                matched.extend(base_query().in_("gr_no", chunk).execute().data or [])
+            matched.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+            total = len(matched)
+            offset = (page - 1) * page_size
+            rows = matched[offset: offset + page_size]
+        else:
+            offset = (page - 1) * page_size
+            resp = base_query(count=True).order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
+            rows = resp.data or []
+            total = resp.count if resp.count is not None else len(rows)
 
         # Enrich — same pattern as get_transit_bilties
         bilty_ids = [r["bilty_id"] for r in rows if r.get("bilty_id")]
