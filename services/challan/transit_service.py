@@ -460,6 +460,124 @@ def bulk_remove_from_transit(transit_ids: list, challan_id: str = None) -> dict:
         return {"status": "error", "message": str(e), "status_code": 500}
 
 
+# ── DELIVERY MANAGEMENT PAGE — list by branch + delivered/not-delivered ──
+
+def list_delivery_status(
+    branch_id: str = None,
+    is_delivered: bool = None,
+    search: str = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """
+    Transit rows for ONE destination branch (to_branch_id), filterable by
+    delivery status — the data behind a "Delivery Management" page: show
+    what's still pending so it can be marked delivered inline.
+
+    is_delivered:
+      None  -> everything (both delivered and pending)
+      False -> pending only (is_delivered_at_destination = false)
+      True  -> delivered only
+    search matches gr_no or challan_no.
+    """
+    try:
+        sb = get_supabase()
+        q = sb.table("transit_details").select(TRANSIT_COLS, count="exact")
+        if branch_id:
+            q = q.eq("to_branch_id", branch_id)
+        if is_delivered is not None:
+            q = q.eq("is_delivered_at_destination", is_delivered)
+        if search:
+            q = q.or_(f"gr_no.ilike.%{search}%,challan_no.ilike.%{search}%")
+
+        offset = (page - 1) * page_size
+        q = q.order("created_at", desc=True).range(offset, offset + page_size - 1)
+        resp = q.execute()
+        rows = resp.data or []
+        total = resp.count if resp.count is not None else len(rows)
+
+        # Enrich — same pattern as get_transit_bilties
+        bilty_ids = [r["bilty_id"] for r in rows if r.get("bilty_id")]
+        bilty_map = {}
+        if bilty_ids:
+            b_resp = sb.table("bilty").select(
+                "id, gr_no, consignor_name, consignee_name, transport_name, "
+                "payment_mode, no_of_pkg, wt, total, to_city_id, e_way_bill, pvt_marks, contain, bilty_date"
+            ).in_("id", bilty_ids).execute()
+            bilty_map = {b["id"]: b for b in (b_resp.data or [])}
+
+        station_grs = [r["gr_no"] for r in rows if not r.get("bilty_id")]
+        station_map = {}
+        if station_grs:
+            s_resp = sb.table("station_bilty_summary").select(
+                "gr_no, consignor, consignee, transport_name, "
+                "payment_status, no_of_packets, weight, amount, city_id, e_way_bill, pvt_marks, contents, created_at"
+            ).in_("gr_no", station_grs).execute()
+            station_map = {s["gr_no"]: s for s in (s_resp.data or [])}
+
+        for r in rows:
+            if r.get("bilty_id") and r["bilty_id"] in bilty_map:
+                b = bilty_map[r["bilty_id"]]
+                r.update({
+                    "consignor_name": b.get("consignor_name"), "consignee_name": b.get("consignee_name"),
+                    "transport_name": b.get("transport_name"), "payment_mode": b.get("payment_mode"),
+                    "no_of_pkg": b.get("no_of_pkg"), "wt": b.get("wt"), "total": b.get("total"),
+                    "to_city_id": b.get("to_city_id"), "e_way_bill": b.get("e_way_bill"),
+                    "pvt_marks": b.get("pvt_marks"), "contain": b.get("contain"),
+                    "bilty_date": b.get("bilty_date"), "source_table": "bilty",
+                })
+            elif r["gr_no"] in station_map:
+                s = station_map[r["gr_no"]]
+                r.update({
+                    "consignor_name": s.get("consignor"), "consignee_name": s.get("consignee"),
+                    "transport_name": s.get("transport_name"), "payment_mode": s.get("payment_status"),
+                    "no_of_pkg": s.get("no_of_packets"), "wt": s.get("weight"), "total": s.get("amount"),
+                    "to_city_id": s.get("city_id"), "e_way_bill": s.get("e_way_bill"),
+                    "pvt_marks": s.get("pvt_marks"), "contain": s.get("contents"),
+                    "bilty_date": s.get("created_at"), "source_table": "station_bilty_summary",
+                })
+
+        return {
+            "status": "success",
+            "data": {"rows": rows, "page": page, "page_size": page_size,
+                     "total": total, "has_more": (offset + page_size) < total},
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
+
+def mark_delivered(transit_id: str, user_id: str = None, remarks: str = None) -> dict:
+    """Convenience single-row wrapper around bulk_update_delivery_status —
+    the 'deliver this one' button on the Delivery Management page.
+
+    bulk_update_delivery_status reports success as long as the Supabase
+    call itself doesn't error — it never checks whether a row with that id
+    actually existed, so updating a bad/already-deleted id silently comes
+    back 'success' with nothing changed. Checked explicitly here instead,
+    since a false-positive on a user-facing 'mark delivered' button is
+    exactly the kind of bug nobody notices until the GR never shows up
+    delivered anywhere.
+    """
+    if not transit_id:
+        return {"status": "error", "message": "transit_id is required", "status_code": 400}
+
+    sb = get_supabase()
+    existing = sb.table("transit_details").select("id, gr_no, is_delivered_at_destination").eq("id", transit_id).execute().data
+    if not existing:
+        return {"status": "error", "message": f"Transit record '{transit_id}' not found", "status_code": 404}
+    if existing[0]["is_delivered_at_destination"]:
+        return {"status": "success", "message": f"GR {existing[0]['gr_no']} was already marked delivered"}
+
+    item = {"id": transit_id, "stage": "delivered_at_destination"}
+    if remarks:
+        item["remarks"] = remarks
+    result = bulk_update_delivery_status([item], user_id)
+    if result["status"] == "success" and result["data"]["failed_count"]:
+        err = result["data"]["failed"][0]["error"]
+        return {"status": "error", "message": err, "status_code": 400}
+    return {"status": "success", "message": f"GR {existing[0]['gr_no']} marked delivered"}
+
+
 # ── BULK UPDATE DELIVERY STATUS ───────────────────────────────
 
 def bulk_update_delivery_status(updates: list, user_id: str = None) -> dict:

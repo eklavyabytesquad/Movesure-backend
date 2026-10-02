@@ -92,6 +92,7 @@ from services.challan.transit_service import (
     get_available_bilties, get_transit_bilties, add_to_transit,
     remove_from_transit, bulk_remove_from_transit,
     bulk_update_delivery_status, get_challan_stats,
+    list_delivery_status, mark_delivered,
 )
 from services.challan.truck_trip_service import (
     list_trips, get_trip, create_trip, update_trip, delete_trip,
@@ -1383,6 +1384,35 @@ async def transit_delivery_status(request: Request):
     try:
         data = await request.json()
         result = await _run(bulk_update_delivery_status, data.get("updates", []), data.get("user_id"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/challan/transit/delivery")
+async def transit_delivery_list(
+    branch_id: str = Query(None),
+    is_delivered: bool = Query(None, description="Omit for all, false for pending, true for delivered"),
+    search: str = Query(None, description="Matches gr_no or challan_no"),
+    page: int = Query(1),
+    page_size: int = Query(50),
+):
+    """Delivery Management page — list transit rows for a branch, filtered
+    by delivery status. Pass is_delivered=false for the 'needs action' view."""
+    try:
+        result = await _run(list_delivery_status, branch_id, is_delivered, search, page, page_size)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/transit/{transit_id}/deliver")
+async def transit_mark_delivered(request: Request, transit_id: str = Path(...)):
+    """Mark ONE transit row delivered — the inline action button on the
+    Delivery Management page. Body (optional): { user_id, remarks }."""
+    try:
+        data = await request.json() if await request.body() else {}
+        result = await _run(mark_delivered, transit_id, data.get("user_id"), data.get("remarks"))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
