@@ -113,7 +113,7 @@ from services.crossing_bill.nil_bilty_service import (
 from services.crossing_bill.bilty_crossing_bill_service import (
     create_bilty_crossing_bill, get_bilty_crossing_bill, list_bilty_crossing_bills,
     update_bilty_crossing_bill, delete_bilty_crossing_bill,
-    search_transporters, preview_gr,
+    search_transporters, preview_gr, update_gr_kaat_pf,
 )
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
@@ -1944,6 +1944,20 @@ async def bilty_crossing_bill_update(request: Request, bill_id: str = Path(...))
     try:
         data = await request.json()
         result = await _run(update_bilty_crossing_bill, bill_id, data)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/bilty-crossing-bill/{bill_id}/gr/{gr_no}")
+async def bilty_crossing_bill_update_gr(request: Request, bill_id: str = Path(...), gr_no: str = Path(...)):
+    """Edit kaat and/or pf for one GR on this bill — updates BOTH
+    bilty_wise_kaat AND this bill's own metadata, then recomputes the
+    bill's totals (including total_paid_kaat / net_payable).
+    Body: { kaat?, pf?, updated_by? } — at least one of kaat/pf required."""
+    try:
+        data = await request.json()
+        result = await _run(update_gr_kaat_pf, bill_id, gr_no, data)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
