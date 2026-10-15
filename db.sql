@@ -401,6 +401,8 @@ CREATE TABLE public.station_bilty_summary (
   remaining_amount numeric,
   short_packages_count integer NOT NULL DEFAULT 0,
   is_advance_bilty boolean NOT NULL DEFAULT false,
+  small_bilties jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(small_bilties) = 'array'::text),
+  group_ref character varying(100),
   CONSTRAINT station_bilty_summary_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.monthly_bill (

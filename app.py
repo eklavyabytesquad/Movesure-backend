@@ -80,6 +80,10 @@ from services.kaat.kaat_rate_master_service import (
     delete_hub_rate, apply_hub_rate_to_bilties,
 )
 from services.bilty.transit_bilty_upload_service import upload_transit_bilty_image, get_transit_bilty_image
+from services.bilty.station_bilty_meta_service import (
+    get_station_bilty_meta, lookup_station_bilty, find_by_small_gr, update_station_bilty_meta,
+    add_small_bilty, update_small_bilty, remove_small_bilty, list_groups, list_bilties_by_group,
+)
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
 )
@@ -2594,6 +2598,70 @@ async def get_station_bilty_payment_endpoint(gr_no: str = Path(...)):
     except Exception as e:
         log.error(f"[GET /api/station-bilty/payment] Error: {str(e)}", exc_info=True)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+# ============================================================
+# STATION (MANUAL) BILTY — small bilties, group_ref, short / advance
+# ============================================================
+
+async def _sbm(func, *args):
+    try:
+        return _response(await _run(func, *args))
+    except Exception as e:
+        log.exception("Error in %s: %s", func.__name__, e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/station-bilty/groups")
+async def station_bilty_groups(q: Optional[str] = Query(None)):
+    """Distinct group_refs with bilty counts (for the group autocomplete)."""
+    return await _sbm(list_groups, q)
+
+
+@app.get("/api/station-bilty/groups/{group_ref}/bilties")
+async def station_bilty_group_bilties(group_ref: str = Path(...), page: int = Query(1), page_size: int = Query(50)):
+    """Manual bilties tagged with one group_ref (case-insensitive)."""
+    return await _sbm(list_bilties_by_group, group_ref, page, page_size)
+
+
+@app.get("/api/station-bilty/lookup")
+async def station_bilty_lookup(gr_no: str = Query(...), station: Optional[str] = Query(None)):
+    """Station bilty rows (with meta) for a manual GR no — gr_no isn't unique, so this returns a list."""
+    return await _sbm(lookup_station_bilty, gr_no, station)
+
+
+@app.get("/api/station-bilty/by-small-gr/{small_gr_no}")
+async def station_bilty_by_small_gr(small_gr_no: str = Path(...)):
+    """Which manual bilty a small slip GR no was merged into."""
+    return await _sbm(find_by_small_gr, small_gr_no)
+
+
+@app.get("/api/station-bilty/{sbs_id}/meta")
+async def station_bilty_meta_get(sbs_id: str = Path(...)):
+    return await _sbm(get_station_bilty_meta, sbs_id)
+
+
+@app.patch("/api/station-bilty/{sbs_id}/meta")
+async def station_bilty_meta_update(request: Request, sbs_id: str = Path(...)):
+    """Body (all optional): group_ref, short_packages_count, is_advance_bilty,
+    advance_amount, remaining_amount, updated_by."""
+    return await _sbm(update_station_bilty_meta, sbs_id, await request.json())
+
+
+@app.post("/api/station-bilty/{sbs_id}/small-bilties")
+async def station_bilty_small_add(request: Request, sbs_id: str = Path(...)):
+    """Body: small_gr_no (required), no_of_packets, weight, amount, pvt_marks, booked_at, remark, updated_by."""
+    return await _sbm(add_small_bilty, sbs_id, await request.json())
+
+
+@app.put("/api/station-bilty/{sbs_id}/small-bilties/{item_id}")
+async def station_bilty_small_update(request: Request, sbs_id: str = Path(...), item_id: str = Path(...)):
+    return await _sbm(update_small_bilty, sbs_id, item_id, await request.json())
+
+
+@app.delete("/api/station-bilty/{sbs_id}/small-bilties/{item_id}")
+async def station_bilty_small_delete(sbs_id: str = Path(...), item_id: str = Path(...), updated_by: Optional[str] = Query(None)):
+    return await _sbm(remove_small_bilty, sbs_id, item_id, updated_by)
 
 
 # ============================================================
