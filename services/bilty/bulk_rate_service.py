@@ -61,6 +61,55 @@ def _fetch_all_cities(sb, exclude_city_ids, exclude_city_names):
     return kept, excluded
 
 
+def _fetch_worked_cities(sb, table: str, owner_id: str) -> list:
+    """
+    Cities this consignor/consignee has ACTUALLY sent/received consignments
+    to — not every city in the system. Matched against real shipment
+    history (bilty + station_bilty_summary), not just the master-record
+    name, because that's the only reliable signal of "worked with".
+
+    table="consignor_bilty_profile" -> matches bilty.consignor_gst /
+          consignor_name against the `consignors` master row for owner_id.
+    table="consignee_bilty_profile" -> same, consignee side.
+    """
+    is_consignor = table == "consignor_bilty_profile"
+    master_table = "consignors" if is_consignor else "consignees"
+    gst_col = "consignor_gst" if is_consignor else "consignee_gst"
+    name_col = "consignor_name" if is_consignor else "consignee_name"
+    sbs_name_col = "consignor" if is_consignor else "consignee"  # station_bilty_summary's column names differ
+
+    owner_res = sb.table(master_table).select("company_name, gst_num").eq("id", owner_id).execute().data
+    if not owner_res:
+        return []
+    company_name = (owner_res[0].get("company_name") or "").strip()
+    gst_num = (owner_res[0].get("gst_num") or "").strip().upper() or None
+
+    city_ids = set()
+
+    # bilty table — match by GSTIN first (exact, reliable), name as fallback
+    b_query = sb.table("bilty").select("to_city_id").eq("is_active", True)
+    if gst_num:
+        rows = b_query.eq(gst_col, gst_num).execute().data or []
+    elif company_name:
+        rows = b_query.ilike(name_col, company_name).execute().data or []
+    else:
+        rows = []
+    city_ids |= {r["to_city_id"] for r in rows if r.get("to_city_id")}
+
+    # station_bilty_summary — no GSTIN column for consignor/consignee there, match by name only
+    if company_name:
+        rows = sb.table("station_bilty_summary").select("city_id").ilike(sbs_name_col, company_name).execute().data or []
+        city_ids |= {r["city_id"] for r in rows if r.get("city_id")}
+
+    if not city_ids:
+        return []
+
+    cities = []
+    for chunk in _chunks(list(city_ids), 200):
+        cities.extend(sb.table("cities").select("id, city_code, city_name").in_("id", chunk).execute().data or [])
+    return cities
+
+
 def _fetch_existing_profiles(sb, table, owner_col, owner_id):
     profiles = {}
     page = 0
@@ -94,6 +143,7 @@ def bulk_set_rate(
     exclude_city_names: list = None,
     extra_fields: dict = None,
     created_by: str = None,
+    scope: str = "all",
 ) -> dict:
     """
     Generic bulk-rate setter shared by consignor and consignee profiles.
@@ -101,10 +151,19 @@ def bulk_set_rate(
     `table` is "consignor_bilty_profile" or "consignee_bilty_profile",
     `owner_col` is "consignor_id" or "consignee_id".
 
+    scope="all" (default, unchanged from before): every city in the
+          system except the excluded ones.
+    scope="worked_with": ONLY cities this consignor/consignee has actual
+          shipment history to/from (bilty + station_bilty_summary,
+          matched by GSTIN where available, else name) — what you
+          actually want for "set my rate for the stations I ship to",
+          not a rate row manufactured for every station in the system
+          whether or not this party has ever used it.
+
     Applies `rate` + `rate_unit` (+ any of OPTIONAL_BULK_FIELDS passed in
-    `extra_fields`) to every city in the system except the excluded ones:
-    updates the profile row where one already exists for that city, and
-    creates a new active profile row where one doesn't.
+    `extra_fields`) to the scoped set of cities: updates the profile row
+    where one already exists for that city, and creates a new active
+    profile row where one doesn't.
     """
     try:
         if not owner_id:
@@ -114,6 +173,9 @@ def bulk_set_rate(
         rate_unit = (rate_unit or "PER_NAG").upper()
         if rate_unit not in RATE_UNITS:
             return {"status": "error", "message": f"rate_unit must be one of {RATE_UNITS}", "status_code": 400}
+        scope = (scope or "all").lower()
+        if scope not in ("all", "worked_with"):
+            return {"status": "error", "message": "scope must be 'all' or 'worked_with'", "status_code": 400}
 
         extra_fields = dict(extra_fields or {})
         unknown = set(extra_fields) - set(OPTIONAL_BULK_FIELDS)
@@ -126,7 +188,19 @@ def bulk_set_rate(
 
         sb = get_supabase()
 
-        kept_cities, excluded_cities = _fetch_all_cities(sb, exclude_city_ids, exclude_city_names)
+        if scope == "worked_with":
+            worked_cities = _fetch_worked_cities(sb, table, owner_id)
+            if not worked_cities:
+                return {"status": "error",
+                        "message": "No shipment history found for this consignor/consignee — nothing to scope to. Use scope='all' to apply everywhere instead.",
+                        "status_code": 404}
+            exclude_ids = {c.strip() for c in (exclude_city_ids or []) if c and c.strip()}
+            exclude_names = {c.strip().upper() for c in (exclude_city_names or []) if c and c.strip()}
+            kept_cities = [c for c in worked_cities
+                           if c["id"] not in exclude_ids and (c.get("city_name") or "").strip().upper() not in exclude_names]
+            excluded_cities = [c for c in worked_cities if c not in kept_cities]
+        else:
+            kept_cities, excluded_cities = _fetch_all_cities(sb, exclude_city_ids, exclude_city_names)
         if not kept_cities:
             return {"status": "error", "message": "No cities left to apply after exclusions", "status_code": 400}
 
@@ -166,6 +240,7 @@ def bulk_set_rate(
             "status": "success",
             "data": {
                 owner_col: owner_id,
+                "scope": scope,
                 "rate": rate,
                 "rate_unit": rate_unit,
                 "applied_fields": common_payload,

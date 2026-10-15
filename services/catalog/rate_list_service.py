@@ -298,6 +298,133 @@ def save_rate_list_pdf(consignor_name: str = SAMPLE_CONSIGNOR, rates: dict = Non
     return output_path
 
 
+def generate_station_rate_list_pdf(consignor_name: str, station_rates: dict, goods_type: str) -> bytes:
+    """
+    Simple per-station (not per-state) rate list — one rate per kg per
+    city, e.g. {"KANPUR": "Rs. 1.70 / kg", ...} — scoped to one goods
+    category (e.g. "HARDWARE GOODS"), called out clearly so it's never
+    mistaken for a general all-goods rate list. Same letterhead/branding
+    as generate_rate_list_pdf, different (simpler) table shape.
+    """
+    buf = io.BytesIO()
+
+    logo_y = PAGE_H - (BORDER_MARGIN + BORDER_GAP) - LETTERHEAD_TOP_GAP - LOGO_H
+    rule_y = logo_y - 0.4 * cm
+    top_margin = PAGE_H - (rule_y - 0.9 * cm)
+
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=2.1 * cm, rightMargin=2.1 * cm,
+        topMargin=top_margin, bottomMargin=2.8 * cm,
+    )
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "Title", parent=styles["Normal"], fontSize=17, fontName="Helvetica-Bold",
+        textColor=NAVY, alignment=TA_CENTER, leading=17,
+    )
+    to_label_style = ParagraphStyle(
+        "ToLabel", parent=styles["Normal"], fontSize=9.5, fontName="Helvetica",
+        textColor=GREY, spaceAfter=2,
+    )
+    consignor_style = ParagraphStyle(
+        "Consignor", parent=styles["Normal"], fontSize=13, fontName="Helvetica-Bold",
+        textColor=DARK, spaceAfter=10,
+    )
+    body_style = ParagraphStyle(
+        "Body", parent=styles["Normal"], fontSize=10, fontName="Helvetica",
+        textColor=DARK, alignment=TA_LEFT, leading=15, spaceAfter=10,
+    )
+    goods_note_style = ParagraphStyle(
+        "GoodsNote", parent=styles["Normal"], fontSize=10.5, fontName="Helvetica-Bold",
+        textColor=GOLD, alignment=TA_CENTER, spaceAfter=16,
+    )
+    sign_label_style = ParagraphStyle(
+        "SignLabel", parent=styles["Normal"], fontSize=10.5, fontName="Helvetica-Bold",
+        textColor=NAVY, alignment=TA_RIGHT,
+    )
+    sign_role_style = ParagraphStyle(
+        "SignRole", parent=styles["Normal"], fontSize=9, fontName="Helvetica",
+        textColor=DARK, alignment=TA_RIGHT,
+    )
+
+    story = []
+
+    title_band = Table([[Paragraph("STATION-WISE FREIGHT RATE LIST", title_style)]], colWidths=[doc.width])
+    title_band.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), GOLD_PALE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("BOX", (0, 0), (-1, -1), 0.8, GOLD),
+    ]))
+    story.append(title_band)
+    story.append(Spacer(1, 0.5 * cm))
+
+    story.append(Paragraph("To,", to_label_style))
+    story.append(Paragraph(f"M/s {consignor_name}", consignor_style))
+
+    story.append(Paragraph(
+        f"Please find below our station-wise freight rates for consignments booked through "
+        f"<b>{COMPANY_NAME}</b>, applicable until revised:",
+        body_style,
+    ))
+    story.append(Paragraph(f"RATES APPLICABLE FOR {goods_type.upper()} ONLY", goods_note_style))
+
+    table_rows = [["Station", "Rate (per kg)"]]
+    for station, rate in station_rates.items():
+        table_rows.append([station.upper(), rate])
+
+    rate_table = Table(table_rows, colWidths=[8.5 * cm, 8.5 * cm])
+    rate_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 10.5),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [GOLD_PALE, colors.white]),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (1, 1), (1, -1), NAVY),
+        ("FONTSIZE", (0, 1), (-1, -1), 11),
+        ("GRID", (0, 0), (-1, -1), 0.6, GOLD),
+        ("BOX", (0, 0), (-1, -1), 1.2, NAVY),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+    story.append(rate_table)
+
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(Paragraph(
+        f"<i>Note: The above rates apply exclusively to {goods_type.lower()} consignments. "
+        f"A different rate card applies to other goods categories.</i>",
+        ParagraphStyle("FinePrint", parent=styles["Normal"], fontSize=8.5, fontName="Helvetica-Oblique",
+                       textColor=GREY, alignment=TA_LEFT, spaceAfter=6),
+    ))
+
+    story.append(Spacer(1, 0.8 * cm))
+    sign_table = Table(
+        [[Paragraph(COMPANY_NAME, sign_label_style)],
+         [Spacer(1, 1.6 * cm)],
+         [Paragraph("Authorized Signatory", sign_role_style)]],
+        colWidths=[doc.width],
+    )
+    sign_table.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "RIGHT")]))
+    story.append(sign_table)
+
+    doc.build(story, onFirstPage=_draw_page_frame, onLaterPages=_draw_page_frame)
+    return buf.getvalue()
+
+
+def save_station_rate_list_pdf(consignor_name: str, station_rates: dict, goods_type: str, output_path: str = None) -> str:
+    output_path = output_path or os.path.join(BASE_DIR, "station_rate_list.pdf")
+    pdf_bytes = generate_station_rate_list_pdf(consignor_name, station_rates, goods_type)
+    with open(output_path, "wb") as f:
+        f.write(pdf_bytes)
+    return output_path
+
+
 if __name__ == "__main__":
     path = save_rate_list_pdf()
     print(f"Rate list saved to: {path}")

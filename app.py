@@ -867,10 +867,16 @@ async def consignee_rate_stations(consignee_id: str = Path(...)):
 @app.post("/api/bilty/rates/consignor/bulk-set")
 async def consignor_rate_bulk_set(request: Request):
     """
-    Set ONE rate for a consignor across every station in the system.
+    Set ONE rate for a consignor across a set of stations.
 
     Body:
       consignor_id (required), rate (required), rate_unit ('PER_KG'|'PER_NAG', default 'PER_NAG'),
+      scope ('all'|'worked_with', default 'all') — 'all' = every station in
+        the system (the original behavior); 'worked_with' = ONLY stations
+        this consignor has actual shipment history to (matched by GSTIN,
+        falling back to name) — use this for "set my rate for the stations
+        I actually ship to" instead of manufacturing a rate row for every
+        station whether or not this consignor has ever used it,
       exclude_city_ids (list of uuid, optional), exclude_city_names (list of str, optional),
       created_by (uuid, optional), plus any bulk-appliable field (default_payment_mode,
       labour_rate, labour_unit, dd_charge_per_kg, dd_charge_per_nag, local_charge_per_nag,
@@ -883,16 +889,17 @@ async def consignor_rate_bulk_set(request: Request):
         consignor_id = body.get("consignor_id")
         rate = body.get("rate")
         rate_unit = body.get("rate_unit", "PER_NAG")
+        scope = body.get("scope", "all")
         exclude_city_ids = body.get("exclude_city_ids")
         exclude_city_names = body.get("exclude_city_names")
         created_by = body.get("created_by")
         extra_fields = {
             k: v for k, v in body.items()
-            if k not in ("consignor_id", "rate", "rate_unit", "exclude_city_ids", "exclude_city_names", "created_by")
+            if k not in ("consignor_id", "rate", "rate_unit", "scope", "exclude_city_ids", "exclude_city_names", "created_by")
         }
         result = await _run(
             bulk_set_rate, "consignor_bilty_profile", "consignor_id", consignor_id,
-            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by,
+            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by, scope,
         )
         return _response(result)
     except Exception as e:
@@ -901,22 +908,24 @@ async def consignor_rate_bulk_set(request: Request):
 
 @app.post("/api/bilty/rates/consignee/bulk-set")
 async def consignee_rate_bulk_set(request: Request):
-    """Same as /api/bilty/rates/consignor/bulk-set but for a consignee (body uses consignee_id)."""
+    """Same as /api/bilty/rates/consignor/bulk-set but for a consignee
+    (body uses consignee_id). Same scope ('all'|'worked_with') support."""
     try:
         body = await request.json()
         consignee_id = body.get("consignee_id")
         rate = body.get("rate")
         rate_unit = body.get("rate_unit", "PER_NAG")
+        scope = body.get("scope", "all")
         exclude_city_ids = body.get("exclude_city_ids")
         exclude_city_names = body.get("exclude_city_names")
         created_by = body.get("created_by")
         extra_fields = {
             k: v for k, v in body.items()
-            if k not in ("consignee_id", "rate", "rate_unit", "exclude_city_ids", "exclude_city_names", "created_by")
+            if k not in ("consignee_id", "rate", "rate_unit", "scope", "exclude_city_ids", "exclude_city_names", "created_by")
         }
         result = await _run(
             bulk_set_rate, "consignee_bilty_profile", "consignee_id", consignee_id,
-            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by,
+            rate, rate_unit, exclude_city_ids, exclude_city_names, extra_fields, created_by, scope,
         )
         return _response(result)
     except Exception as e:

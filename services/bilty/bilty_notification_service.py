@@ -3,7 +3,7 @@ Bilty "First Booking" WhatsApp Notification
 ==============================================
 Fired once, in the background, right after a NEW bilty is saved (never on
 an edit — see the `if not bilty_id` guard at the call site in
-bilty_save_service.py). Sends the same 7-variable template to whichever of
+bilty_save_service.py). Sends the same 8-variable "first booking" template to whichever of
 consignor_number / consignee_number is a usable Indian mobile number, in
 one webhook call (the API's own "multiple" batch shape).
 
@@ -15,13 +15,14 @@ import requests
 from datetime import datetime
 
 TEMPLATE_URL = "https://campaignadmin.backendprod.com/webhook/template/67f16e7d-787d-4399-9c2a-c1dfddccec15/process"
+COUNTRY_CODE = "+91"
 REQUEST_TIMEOUT = 10  # seconds — runs in the background thread, never blocks the bilty save response
 
 _MOBILE_RE = re.compile(r"^[6-9]\d{9}$")
 
 
 def _normalize_mobile(raw: str) -> str | None:
-    """10-digit Indian mobile -> '91XXXXXXXXXX'. None if not a plausible mobile number."""
+    """Indian mobile -> 10 digits (no country code). None if not a plausible mobile number."""
     if not raw:
         return None
     digits = re.sub(r"\D", "", str(raw))
@@ -29,7 +30,7 @@ def _normalize_mobile(raw: str) -> str | None:
         digits = digits[2:]
     if not _MOBILE_RE.match(digits):
         return None
-    return f"91{digits}"
+    return digits
 
 
 def _format_date(bilty_date: str) -> str:
@@ -56,6 +57,7 @@ def send_first_booking_notification(bilty_row: dict, from_city: dict | None, to_
         "5": (from_city or {}).get("city_name") or "",
         "6": (to_city or {}).get("city_name") or "",
         "7": str(bilty_row.get("no_of_pkg") or ""),
+        "8": bilty_row.get("gr_no") or "",
     }
 
     receivers = []
@@ -71,13 +73,14 @@ def send_first_booking_notification(bilty_row: dict, from_city: dict | None, to_
 
     payload = {
         "type": "multiple",
-        "numbers": [{"receiver": r, "values": values} for r in receivers],
+        "numbers": [{"countryCode": COUNTRY_CODE, "receiver": r, "values": values} for r in receivers],
     }
 
     try:
         resp = requests.post(TEMPLATE_URL, json=payload, timeout=REQUEST_TIMEOUT)
         if resp.status_code >= 400:
             return {"status": "error", "message": f"Webhook returned {resp.status_code}: {resp.text[:300]}"}
-        return {"status": "success", "message": f"Notified {len(receivers)} number(s)", "receivers": receivers}
+        return {"status": "success", "message": f"Notified {len(receivers)} number(s)", "receivers": receivers,
+                "response": resp.text[:300]}
     except Exception as e:
         return {"status": "error", "message": f"Failed to send first-booking notification: {e}"}
