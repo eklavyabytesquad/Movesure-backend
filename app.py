@@ -82,7 +82,11 @@ from services.kaat.kaat_rate_master_service import (
 from services.bilty.transit_bilty_upload_service import upload_transit_bilty_image, get_transit_bilty_image
 from services.bilty.station_bilty_meta_service import (
     get_station_bilty_meta, lookup_station_bilty, find_by_small_gr, update_station_bilty_meta,
-    add_small_bilty, update_small_bilty, remove_small_bilty, list_groups, list_bilties_by_group,
+    add_small_bilty, update_small_bilty, remove_small_bilty,
+)
+from services.bilty.bilty_group_service import (
+    list_bilty_groups, get_bilty_group, create_bilty_group, update_bilty_group,
+    delete_bilty_group, list_group_bilties,
 )
 from services.challan.challan_book_service import (
     list_challan_books, get_challan_book, create_challan_book, update_challan_book,
@@ -2612,16 +2616,41 @@ async def _sbm(func, *args):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
-@app.get("/api/station-bilty/groups")
-async def station_bilty_groups(q: Optional[str] = Query(None)):
-    """Distinct group_refs with bilty counts (for the group autocomplete)."""
-    return await _sbm(list_groups, q)
+# ── Bilty groups (Settings -> Groups; dropdown on manual entry page) ──
+
+@app.get("/api/bilty-groups")
+async def bilty_groups_list(q: Optional[str] = Query(None), include_inactive: bool = Query(False)):
+    """Groups for the dropdown (active only by default) with bilty_count."""
+    return await _sbm(list_bilty_groups, q, include_inactive)
 
 
-@app.get("/api/station-bilty/groups/{group_ref}/bilties")
-async def station_bilty_group_bilties(group_ref: str = Path(...), page: int = Query(1), page_size: int = Query(50)):
-    """Manual bilties tagged with one group_ref (case-insensitive)."""
-    return await _sbm(list_bilties_by_group, group_ref, page, page_size)
+@app.post("/api/bilty-groups")
+async def bilty_groups_create(request: Request):
+    """Body: name (required), description, created_by."""
+    return await _sbm(create_bilty_group, await request.json())
+
+
+@app.get("/api/bilty-groups/{group_id}")
+async def bilty_groups_get(group_id: str = Path(...)):
+    return await _sbm(get_bilty_group, group_id)
+
+
+@app.put("/api/bilty-groups/{group_id}")
+async def bilty_groups_update(request: Request, group_id: str = Path(...)):
+    """Body (all optional): name, description, is_active, updated_by."""
+    return await _sbm(update_bilty_group, group_id, await request.json())
+
+
+@app.delete("/api/bilty-groups/{group_id}")
+async def bilty_groups_delete(group_id: str = Path(...), updated_by: Optional[str] = Query(None)):
+    """Soft delete (is_active=false)."""
+    return await _sbm(delete_bilty_group, group_id, updated_by)
+
+
+@app.get("/api/bilty-groups/{group_id}/bilties")
+async def bilty_groups_bilties(group_id: str = Path(...), page: int = Query(1), page_size: int = Query(50)):
+    """Manual bilties tagged with this group."""
+    return await _sbm(list_group_bilties, group_id, page, page_size)
 
 
 @app.get("/api/station-bilty/lookup")
@@ -2643,7 +2672,7 @@ async def station_bilty_meta_get(sbs_id: str = Path(...)):
 
 @app.patch("/api/station-bilty/{sbs_id}/meta")
 async def station_bilty_meta_update(request: Request, sbs_id: str = Path(...)):
-    """Body (all optional): group_ref, short_packages_count, is_advance_bilty,
+    """Body (all optional): group_id, short_packages_count, is_advance_bilty,
     advance_amount, remaining_amount, updated_by."""
     return await _sbm(update_station_bilty_meta, sbs_id, await request.json())
 

@@ -6,7 +6,9 @@ Extra fields on station_bilty_summary (see migrations/020):
   small_bilties : JSONB array of small slips merged into this manual bilty
                   [{id, small_gr_no, no_of_packets, weight, amount, pvt_marks,
                     booked_at, remark, created_at}]
-  group_ref     : optional group name (e.g. 'MRM', 'RONKEY METAL'), stored UPPER-cased
+  group_id      : optional link to bilty_groups (migrations/021) — groups are
+                  created in Settings, see bilty_group_service.py
+  group_ref     : copy of the group's name, kept in sync by the API
   short_packages_count / is_advance_bilty / advance_amount / remaining_amount
                 : same meaning as on the bilty table
 
@@ -16,11 +18,12 @@ table (the same manual GR can exist under two stations).
 import uuid
 from datetime import datetime, timezone
 from services.supabase_client import get_supabase
+from services.bilty.bilty_group_service import get_group
 
 TABLE = "station_bilty_summary"
 META_COLS = (
     "id, station, gr_no, consignor, consignee, no_of_packets, weight, amount, payment_status, "
-    "small_bilties, group_ref, short_packages_count, is_advance_bilty, advance_amount, remaining_amount, "
+    "small_bilties, group_id, group_ref, short_packages_count, is_advance_bilty, advance_amount, remaining_amount, "
     "created_at, updated_at"
 )
 _SMALL_FIELDS = ("small_gr_no", "no_of_packets", "weight", "amount", "pvt_marks", "booked_at", "remark")
@@ -105,20 +108,26 @@ def find_by_small_gr(small_gr_no: str) -> dict:
 
 # ── Meta (group_ref / short / advance) ────────────────────────────────────────
 def update_station_bilty_meta(sbs_id: str, data: dict) -> dict:
-    """data: any of group_ref, short_packages_count, is_advance_bilty,
+    """data: any of group_id, short_packages_count, is_advance_bilty,
     advance_amount, remaining_amount, updated_by. Omitted keys are untouched;
-    group_ref = null / "" clears the group."""
+    group_id = null clears the group."""
     sb = get_supabase()
     row = _fetch(sb, sbs_id)
     if not row:
         return _err("Station bilty not found", 404)
 
     payload = {}
-    if "group_ref" in data:
-        g = (data.get("group_ref") or "").strip().upper()
-        if len(g) > 100:
-            return _err("group_ref max length is 100")
-        payload["group_ref"] = g or None
+    if "group_id" in data:
+        gid = data.get("group_id") or None
+        if gid:
+            g = get_group(sb, gid)
+            if not g:
+                return _err("Group not found", 404)
+            if not g["is_active"] and gid != row.get("group_id"):
+                return _err(f"Group '{g['name']}' is inactive")
+            payload["group_id"], payload["group_ref"] = g["id"], g["name"]
+        else:
+            payload["group_id"], payload["group_ref"] = None, None
     if "short_packages_count" in data:
         try:
             n = int(data.get("short_packages_count") or 0)
@@ -197,33 +206,3 @@ def remove_small_bilty(sbs_id: str, item_id: str, updated_by: str | None = None)
         return _err("Small bilty not found", 404)
     return _save_smalls(sb, sbs_id, kept, updated_by)
 
-
-# ── Groups ────────────────────────────────────────────────────────────────────
-def list_groups(q: str | None = None) -> dict:
-    """Distinct group_refs with bilty counts — for the group dropdown/autocomplete."""
-    query = get_supabase().table(TABLE).select("group_ref").not_.is_("group_ref", "null")
-    if q:
-        query = query.ilike("group_ref", f"%{q.strip()}%")
-    counts: dict[str, int] = {}
-    off = 0
-    while True:
-        rows = query.range(off, off + 999).execute().data or []
-        for r in rows:
-            counts[r["group_ref"]] = counts.get(r["group_ref"], 0) + 1
-        if len(rows) < 1000:
-            break
-        off += 1000
-    data = [{"group_ref": g, "bilty_count": n} for g, n in sorted(counts.items())]
-    return {"status": "success", "data": data, "count": len(data)}
-
-
-def list_bilties_by_group(group_ref: str, page: int = 1, page_size: int = 50) -> dict:
-    g = (group_ref or "").strip().upper()
-    if not g:
-        return _err("group_ref is required")
-    page, page_size = max(1, page), min(max(1, page_size), 200)
-    start = (page - 1) * page_size
-    r = (get_supabase().table(TABLE).select(META_COLS, count="exact").eq("group_ref", g)
-         .order("created_at", desc=True).range(start, start + page_size - 1).execute())
-    return {"status": "success", "data": [_with_summary(x) for x in r.data or []],
-            "total": r.count or 0, "page": page, "page_size": page_size}

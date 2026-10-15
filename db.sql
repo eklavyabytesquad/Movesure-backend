@@ -369,6 +369,17 @@ CREATE TABLE public.challan_details (
   CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id),
   CONSTRAINT challan_details_challan_book_id_fkey FOREIGN KEY (challan_book_id) REFERENCES public.challan_books(id)
 );
+CREATE TABLE public.bilty_groups (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  name character varying(100) NOT NULL CHECK (btrim(name::text) <> ''::text),
+  description text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT bilty_groups_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.station_bilty_summary (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   station character varying NOT NULL,
@@ -403,7 +414,9 @@ CREATE TABLE public.station_bilty_summary (
   is_advance_bilty boolean NOT NULL DEFAULT false,
   small_bilties jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(small_bilties) = 'array'::text),
   group_ref character varying(100),
-  CONSTRAINT station_bilty_summary_pkey PRIMARY KEY (id)
+  group_id uuid,
+  CONSTRAINT station_bilty_summary_pkey PRIMARY KEY (id),
+  CONSTRAINT station_bilty_summary_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.bilty_groups(id) ON DELETE SET NULL
 );
 CREATE TABLE public.monthly_bill (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
