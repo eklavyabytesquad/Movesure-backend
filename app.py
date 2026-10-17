@@ -84,6 +84,11 @@ from services.bilty.station_bilty_meta_service import (
     get_station_bilty_meta, lookup_station_bilty, find_by_small_gr, update_station_bilty_meta,
     add_small_bilty, update_small_bilty, remove_small_bilty,
 )
+from services.bilty.print_details_service import get_print_details
+from services.bilty.permanent_details_service import (
+    list_print_templates, list_permanent_details, get_permanent_detail,
+    create_permanent_detail, update_permanent_detail, delete_permanent_detail,
+)
 from services.bilty.bilty_group_service import (
     list_bilty_groups, get_bilty_group, create_bilty_group, update_bilty_group,
     delete_bilty_group, list_group_bilties,
@@ -2473,6 +2478,62 @@ async def transit_bilty_image_get(gr_no: str = Path(...)):
         return _response(result)
     except Exception as e:
         log.exception("Error in transit_bilty_image_get: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Print templates + permanent details (Settings -> Permanent Details) ──
+
+async def _pd(func, *args):
+    try:
+        return _response(await _run(func, *args))
+    except Exception as e:
+        log.exception("Error in %s: %s", func.__name__, e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty/print-templates")
+async def bilty_print_templates(doc_type: str = Query("bilty"), include_inactive: bool = Query(False)):
+    """Templates available in the frontend (templates/<code>.js) for the dropdown."""
+    return await _pd(list_print_templates, doc_type, include_inactive)
+
+
+@app.get("/api/bilty/permanent-details")
+async def permanent_details_list(branch_id: Optional[str] = Query(None)):
+    """All print-header rows (optionally one branch), with branch/company names."""
+    return await _pd(list_permanent_details, branch_id)
+
+
+@app.post("/api/bilty/permanent-details")
+async def permanent_details_create(request: Request):
+    return await _pd(create_permanent_detail, await request.json())
+
+
+@app.get("/api/bilty/permanent-details/{pd_id}")
+async def permanent_details_get(pd_id: str = Path(...)):
+    return await _pd(get_permanent_detail, pd_id)
+
+
+@app.put("/api/bilty/permanent-details/{pd_id}")
+async def permanent_details_update(request: Request, pd_id: str = Path(...)):
+    """Send only changed fields (incl. print_template). branch_id/company_id are locked."""
+    return await _pd(update_permanent_detail, pd_id, await request.json())
+
+
+@app.delete("/api/bilty/permanent-details/{pd_id}")
+async def permanent_details_delete(pd_id: str = Path(...)):
+    """Company rows only — the branch default row is protected."""
+    return await _pd(delete_permanent_detail, pd_id)
+
+
+@app.get("/api/bilty/print-details")
+async def bilty_print_details(bilty_id: Optional[str] = Query(None), branch_id: Optional[str] = Query(None),
+                              company_id: Optional[str] = Query(None)):
+    """Print header (permanent_details) for a bilty: the (branch, company) row,
+    else the branch default (company_id NULL). Pass bilty_id, or branch_id [+ company_id]."""
+    try:
+        return _response(await _run(get_print_details, bilty_id, branch_id, company_id))
+    except Exception as e:
+        log.exception("Error in bilty_print_details: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 

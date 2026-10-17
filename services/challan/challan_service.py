@@ -374,9 +374,11 @@ def get_challan_init(branch_id: str) -> dict:
         # Build permanent_details lookup by branch_id for easy PDF header resolution
         perm_details = rpc_data.get("permanent_details") or []
         perm_by_branch = {}
+        # A branch can have one row per company (migrations/022); keep the
+        # branch default (company_id NULL) here so existing headers never change.
         for pd in perm_details:
             bid = pd.get("branch_id")
-            if bid:
+            if bid and (bid not in perm_by_branch or not pd.get("company_id")):
                 perm_by_branch[bid] = pd
 
         # user's own branch permanent details (convenience field for PDF)

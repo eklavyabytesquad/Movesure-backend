@@ -84,6 +84,16 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
                 .execute()
             ).data or []
 
+        def fetch_permanent_details():
+            # One row per (branch, company) — print header; pick with
+            # print_details_service.pick_print_details(bilty.branch_id, bilty.company_id)
+            return (
+                sb.table("permanent_details")
+                .select("*")
+                .eq("branch_id", branch_id)
+                .execute()
+            ).data or []
+
         # Run ALL queries in parallel using shared pool (no per-request thread creation)
         results = {}
         futures = {
@@ -95,6 +105,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
             shared_pool.submit(fetch_rates): "rates",
             shared_pool.submit(fetch_bill_books): "bill_books",
             shared_pool.submit(fetch_companies): "companies",
+            shared_pool.submit(fetch_permanent_details): "permanent_details",
         }
         for future in as_completed(futures):
             key = futures[future]
@@ -131,6 +142,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
                 "rates": results["rates"],
                 "bill_books": results["bill_books"],
                 "companies": results["companies"],
+                "permanent_details": results["permanent_details"],
             },
         }
 

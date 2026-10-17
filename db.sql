@@ -160,6 +160,18 @@ CREATE TABLE public.consignors (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT consignors_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.print_templates (
+  code character varying(50) NOT NULL CHECK (code::text ~ '^[a-z0-9_-]+$'::text),
+  name character varying(100) NOT NULL,
+  description text,
+  doc_type character varying(30) NOT NULL DEFAULT 'bilty'::character varying,
+  preview_url text,
+  sort_order integer NOT NULL DEFAULT 0,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT print_templates_pkey PRIMARY KEY (code)
+);
 CREATE TABLE public.permanent_details (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   branch_id uuid,
@@ -172,8 +184,12 @@ CREATE TABLE public.permanent_details (
   ifsc_code_2 character varying,
   transport_address text,
   website character varying,
+  company_id uuid,
+  print_template character varying(50) NOT NULL DEFAULT 'template1'::character varying,
   CONSTRAINT permanent_details_pkey PRIMARY KEY (id),
-  CONSTRAINT permanent_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id)
+  CONSTRAINT permanent_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
+  CONSTRAINT permanent_details_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id),
+  CONSTRAINT permanent_details_print_template_fkey FOREIGN KEY (print_template) REFERENCES public.print_templates(code) ON UPDATE CASCADE
 );
 CREATE TABLE public.bilty (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
