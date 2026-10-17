@@ -1,21 +1,27 @@
 """
-Permanent Details (print header) + Print Templates Service
-===========================================================
+Permanent Details (print header) + Print Templates + Bill Book Template Service
+================================================================================
 permanent_details: one print-header row per (branch_id, company_id) — see
-migrations/022. company_id NULL = the branch default row. Each row carries
-print_template (FK -> print_templates.code), the layout the frontend uses
-by default whenever it prints a bilty for that branch/company.
+migrations/022. company_id NULL = the branch default row.
 
 print_templates: registry of layouts that exist in the frontend as
 templates/<code>.js (template1.js, template2.js, ...).
+
+bill_books.print_template: the layout a series prints with — the bill book
+chosen on the bilty page decides the template.
 """
+from datetime import datetime, timezone
 from services.supabase_client import get_supabase
 
 TABLE = "permanent_details"
 FIELDS = ("transport_name", "gst", "mobile_number", "bank_act_no_1", "ifsc_code_1",
           "bank_act_no_2", "ifsc_code_2", "transport_address", "website")
-COLS = "id, branch_id, company_id, print_template, " + ", ".join(FIELDS)
+COLS = "id, branch_id, company_id, " + ", ".join(FIELDS)
 DEFAULT_TEMPLATE = "template1"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _err(msg: str, code: int = 400) -> dict:
@@ -91,8 +97,7 @@ def _slot_taken(sb, branch_id: str, company_id: str | None, exclude_id: str | No
 
 
 def create_permanent_detail(data: dict) -> dict:
-    """data: branch_id (required), company_id (optional, null = branch default),
-    print_template (default template1), transport_name, gst, mobile_number,
+    """data: branch_id (required), company_id (optional, null = branch default), transport_name, gst, mobile_number,
     bank_act_no_1, ifsc_code_1, bank_act_no_2, ifsc_code_2, transport_address, website."""
     sb = get_supabase()
     branch_id = data.get("branch_id")
@@ -104,11 +109,7 @@ def create_permanent_detail(data: dict) -> dict:
     if _slot_taken(sb, branch_id, company_id):
         return _err("Permanent details already exist for this branch" +
                     (" and company" if company_id else " (default row)"), 409)
-    template = _clean(data.get("print_template")) or DEFAULT_TEMPLATE
-    err = _check_template(sb, template)
-    if err:
-        return _err(err)
-    row = {"branch_id": branch_id, "company_id": company_id, "print_template": template}
+    row = {"branch_id": branch_id, "company_id": company_id}
     for f in FIELDS:
         row[f] = _clean(data.get(f))
     r = sb.table(TABLE).insert(row).execute()
@@ -127,13 +128,6 @@ def update_permanent_detail(pd_id: str, data: dict) -> dict:
         if locked in data and (data[locked] or None) != row.get(locked):
             return _err(f"{locked} cannot be changed; create a new permanent details row instead")
     payload = {}
-    if "print_template" in data:
-        template = _clean(data.get("print_template")) or DEFAULT_TEMPLATE
-        if template != row.get("print_template"):
-            err = _check_template(sb, template)
-            if err:
-                return _err(err)
-        payload["print_template"] = template
     for f in FIELDS:
         if f in data:
             payload[f] = _clean(data.get(f))
@@ -155,3 +149,39 @@ def delete_permanent_detail(pd_id: str) -> dict:
         return _err("The branch default row cannot be deleted — old bilties print from it")
     sb.table(TABLE).delete().eq("id", pd_id).execute()
     return {"status": "success", "message": "Permanent details deleted"}
+
+
+# ── Bill book (series) template ───────────────────────────────────────────────
+BOOK_COLS = ("id, branch_id, prefix, postfix, digits, from_number, to_number, current_number, "
+             "company_id, print_template, is_active, is_completed")
+
+
+def list_bill_book_templates(branch_id: str | None = None, include_inactive: bool = False) -> dict:
+    """Bill books with their print_template + branch/company names (Settings -> Bill Books)."""
+    sb = get_supabase()
+    q = sb.table("bill_books").select(BOOK_COLS).order("created_at")
+    if branch_id:
+        q = q.eq("branch_id", branch_id)
+    if not include_inactive:
+        q = q.eq("is_active", True)
+    rows = _with_names(sb, q.execute().data or [])
+    for r in rows:
+        r.pop("is_default", None)
+    return {"status": "success", "data": rows, "count": len(rows)}
+
+
+def set_bill_book_template(bill_book_id: str, data: dict) -> dict:
+    """data: { print_template }. Only the template changes — numbering, company and
+    already-saved bilties are untouched (reprints of this series use the new layout)."""
+    sb = get_supabase()
+    code = _clean(data.get("print_template"))
+    if not code:
+        return _err("print_template is required")
+    if not sb.table("bill_books").select("id").eq("id", bill_book_id).execute().data:
+        return _err("Bill book not found", 404)
+    err = _check_template(sb, code)
+    if err:
+        return _err(err)
+    sb.table("bill_books").update({"print_template": code, "updated_at": _now()}).eq("id", bill_book_id).execute()
+    row = sb.table("bill_books").select(BOOK_COLS).eq("id", bill_book_id).execute().data[0]
+    return {"status": "success", "message": "Print template updated", "data": row}

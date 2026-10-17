@@ -352,6 +352,8 @@ def save_bilty(data: dict) -> dict:
             "saving_option": saving_option,
             "short_packages_count": data.get("short_packages_count"),
             "is_advance_bilty": data.get("is_advance_bilty"),
+            # series this bilty was booked from (decides its print template) — new bilties only
+            "bill_book_id": data.get("bill_book_id") if not bilty_id else None,
         }
 
         # === SAVE ===
@@ -381,7 +383,15 @@ def save_bilty(data: dict) -> dict:
         else:
             # INSERT new bilty — remove None values to let DB defaults apply
             bilty_row = {k: v for k, v in bilty_row.items() if v is not None}
-            result = sb.table("bilty").insert(bilty_row).execute()
+            try:
+                result = sb.table("bilty").insert(bilty_row).execute()
+            except Exception as ins_err:
+                # migrations/022 not applied yet -> bilty.bill_book_id missing; never block a save on it
+                if "bill_book_id" in bilty_row and "bill_book_id" in str(ins_err):
+                    bilty_row.pop("bill_book_id")
+                    result = sb.table("bilty").insert(bilty_row).execute()
+                else:
+                    raise
 
         if not result.data:
             return {

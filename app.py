@@ -88,6 +88,7 @@ from services.bilty.print_details_service import get_print_details
 from services.bilty.permanent_details_service import (
     list_print_templates, list_permanent_details, get_permanent_detail,
     create_permanent_detail, update_permanent_detail, delete_permanent_detail,
+    list_bill_book_templates, set_bill_book_template,
 )
 from services.bilty.bilty_group_service import (
     list_bilty_groups, get_bilty_group, create_bilty_group, update_bilty_group,
@@ -2515,7 +2516,7 @@ async def permanent_details_get(pd_id: str = Path(...)):
 
 @app.put("/api/bilty/permanent-details/{pd_id}")
 async def permanent_details_update(request: Request, pd_id: str = Path(...)):
-    """Send only changed fields (incl. print_template). branch_id/company_id are locked."""
+    """Send only changed fields. branch_id/company_id are locked."""
     return await _pd(update_permanent_detail, pd_id, await request.json())
 
 
@@ -2525,13 +2526,25 @@ async def permanent_details_delete(pd_id: str = Path(...)):
     return await _pd(delete_permanent_detail, pd_id)
 
 
+@app.get("/api/bilty/bill-books/templates")
+async def bill_book_templates_list(branch_id: Optional[str] = Query(None), include_inactive: bool = Query(False)):
+    """Bill books (series) with their print_template, for Settings -> Bill Books."""
+    return await _pd(list_bill_book_templates, branch_id, include_inactive)
+
+
+@app.put("/api/bilty/bill-books/{bill_book_id}/template")
+async def bill_book_template_set(request: Request, bill_book_id: str = Path(...)):
+    """Body: { "print_template": "template2" } — the layout this series prints with."""
+    return await _pd(set_bill_book_template, bill_book_id, await request.json())
+
+
 @app.get("/api/bilty/print-details")
 async def bilty_print_details(bilty_id: Optional[str] = Query(None), branch_id: Optional[str] = Query(None),
-                              company_id: Optional[str] = Query(None)):
-    """Print header (permanent_details) for a bilty: the (branch, company) row,
-    else the branch default (company_id NULL). Pass bilty_id, or branch_id [+ company_id]."""
+                              company_id: Optional[str] = Query(None), bill_book_id: Optional[str] = Query(None)):
+    """Header (permanent_details by branch+company) + print_template (by bill book / series).
+    Pass bilty_id, or branch_id [+ company_id, bill_book_id] for a preview."""
     try:
-        return _response(await _run(get_print_details, bilty_id, branch_id, company_id))
+        return _response(await _run(get_print_details, bilty_id, branch_id, company_id, bill_book_id))
     except Exception as e:
         log.exception("Error in bilty_print_details: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)

@@ -68,7 +68,7 @@ def get_reference_data(branch_id: str, user_id: str) -> dict:
         def fetch_bill_books():
             return (
                 sb.table("bill_books")
-                .select("id, prefix, from_number, to_number, digits, postfix, current_number, is_fixed, auto_continue, consignor_id, company_id")
+                .select("id, prefix, from_number, to_number, digits, postfix, current_number, is_fixed, auto_continue, consignor_id, company_id, print_template")
                 .eq("branch_id", branch_id)
                 .eq("is_active", True)
                 .eq("is_completed", False)
