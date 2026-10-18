@@ -167,6 +167,12 @@ from services.ledger.labour_kharcha_service import (
     list_labour, create_labour, get_labour_detail, add_labour_expense, pay_labour,
 )
 from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
+from services.ledger.transport_ledger_service import (
+    list_received_challans, get_challan_bilties, list_unassigned, transport_options,
+    create_transport_ledger, update_transport_ledger, list_transport_ledgers, get_transport_ledger,
+    list_transport_ledger_bilties, assign_bilties, auto_assign_challan, unassign_bilty,
+    refresh_transport_ledger,
+)
 from services.ledger.party_ledger_service import (
     create_party_ledger, update_party_profile, list_party_ledgers, get_party_ledger,
     list_ledger_bilties, add_bilties, remove_bilty, sync_party_ledger, on_bilty_saved, bill_bilties,
@@ -4088,6 +4094,89 @@ async def party_ledgers_collect(request: Request, ledger_id: str = Path(...)):
 @app.put("/api/ledger/party-ledgers/{ledger_id}/collect/{voucher_id}")
 async def party_ledgers_collect_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
     return await _party_edit(collect_from_party, ledger_id, voucher_id, request)
+
+
+# ── Transport ledgers (per bilty, from challans received at the hub) ──
+
+@app.get("/api/ledger/transport-ledgers")
+async def transport_ledgers_list(branch_id: str = Query(None)):
+    """Transport ledgers (one per GSTIN) with balance, bilty count, to-pay / kaat / pf totals."""
+    return await _pl(list_transport_ledgers, branch_id)
+
+
+@app.post("/api/ledger/transport-ledgers")
+async def transport_ledgers_create(request: Request):
+    """{ transport_id, branch_id, created_by, ledger_id?, name?, allow_zero_kaat? }"""
+    return await _pl(create_transport_ledger, await request.json())
+
+
+@app.get("/api/ledger/transport-ledgers/challans")
+async def transport_ledgers_challans(from_date: str = Query(None), to_date: str = Query(None),
+                                     branch_id: str = Query(None), page: int = Query(1), page_size: int = Query(30)):
+    """Challans received at the hub with assigned / unassigned bilty counts."""
+    return await _pl(list_received_challans, from_date, to_date, branch_id, page, page_size)
+
+
+@app.get("/api/ledger/transport-ledgers/challans/{challan_no}")
+async def transport_ledgers_challan(challan_no: str = Path(...)):
+    """Bilties of one received challan with station, parties, to-pay/paid, kaat, pf and the suggested transport."""
+    return await _pl(get_challan_bilties, challan_no)
+
+
+@app.post("/api/ledger/transport-ledgers/challans/{challan_no}/auto-assign")
+async def transport_ledgers_auto_assign(request: Request, challan_no: str = Path(...)):
+    """{ dry_run (default true), allow_zero_kaat?, branch_id?, updated_by }"""
+    return await _pl(auto_assign_challan, challan_no, await request.json())
+
+
+@app.get("/api/ledger/transport-ledgers/unassigned")
+async def transport_ledgers_unassigned(from_date: str = Query(None), to_date: str = Query(None),
+                                       branch_id: str = Query(None), only_undetected: bool = Query(False),
+                                       include_settled: bool = Query(False)):
+    """Received bilties in no transport ledger (with suggestion or the reason none was found). Default: last 30 days."""
+    return await _pl(list_unassigned, from_date, to_date, branch_id, only_undetected, include_settled)
+
+
+@app.get("/api/ledger/transport-ledgers/transport-options")
+async def transport_ledgers_options(station_city_id: str = Query(None), q: str = Query(None)):
+    """Transports for the manual pick dropdown (station's own first, priority first)."""
+    return await _pl(transport_options, station_city_id, q)
+
+
+@app.post("/api/ledger/transport-ledgers/assign")
+async def transport_ledgers_assign(request: Request):
+    """{ items: [{gr_no, ledger_id?|transport_id?}], allow_zero_kaat?, create_missing_ledgers?, branch_id?, updated_by }"""
+    return await _pl(assign_bilties, await request.json())
+
+
+@app.get("/api/ledger/transport-ledgers/{ledger_id}")
+async def transport_ledgers_get(ledger_id: str = Path(...)):
+    return await _pl(get_transport_ledger, ledger_id)
+
+
+@app.put("/api/ledger/transport-ledgers/{ledger_id}")
+async def transport_ledgers_update(request: Request, ledger_id: str = Path(...)):
+    """{ add_transport_ids?, remove_transport_ids?, allow_zero_kaat?, updated_by }"""
+    return await _pl(update_transport_ledger, ledger_id, await request.json())
+
+
+@app.get("/api/ledger/transport-ledgers/{ledger_id}/bilties")
+async def transport_ledgers_bilties(ledger_id: str = Path(...), challan_no: str = Query(None),
+                                    payment_mode: str = Query(None), status: str = Query(None), q: str = Query(None),
+                                    page: int = Query(1), page_size: int = Query(50)):
+    return await _pl(list_transport_ledger_bilties, ledger_id, challan_no, payment_mode, status, q, page, page_size)
+
+
+@app.delete("/api/ledger/transport-ledgers/{ledger_id}/bilties/{link_id}")
+async def transport_ledgers_unassign(ledger_id: str = Path(...), link_id: str = Path(...),
+                                     user_id: str = Query(None), reason: str = Query(None)):
+    return await _pl(unassign_bilty, ledger_id, link_id, user_id, reason)
+
+
+@app.post("/api/ledger/transport-ledgers/{ledger_id}/refresh")
+async def transport_ledgers_refresh(request: Request, ledger_id: str = Path(...)):
+    """{ dry_run (default true), updated_by } — follow kaat edited on the kaat screens."""
+    return await _pl(refresh_transport_ledger, ledger_id, await request.json())
 
 
 # ── Party screen EDITS (same body as the create call) ───────────
