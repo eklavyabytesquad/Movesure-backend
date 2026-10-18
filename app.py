@@ -169,7 +169,7 @@ from services.ledger.labour_kharcha_service import (
 from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
 from services.ledger.party_ledger_service import (
     create_party_ledger, update_party_profile, list_party_ledgers, get_party_ledger,
-    list_ledger_bilties, add_bilties, remove_bilty, sync_party_ledger, on_bilty_saved,
+    list_ledger_bilties, add_bilties, remove_bilty, sync_party_ledger, on_bilty_saved, bill_bilties,
     collect_from_party, search_bilties, search_parties, name_variants,
 )
 from services.ledger.delivery_service import get_delivery_income, get_delivery_expense, get_delivery_summary
@@ -4065,6 +4065,12 @@ async def party_ledgers_add_bilties(request: Request, ledger_id: str = Path(...)
 async def party_ledgers_remove_bilty(ledger_id: str = Path(...), link_id: str = Path(...),
                                      user_id: str = Query(None), reason: str = Query(None)):
     return await _pl(remove_bilty, ledger_id, link_id, user_id, reason)
+
+
+@app.post("/api/ledger/party-ledgers/{ledger_id}/bill")
+async def party_ledgers_bill(request: Request, ledger_id: str = Path(...)):
+    """Enter billed amounts: { items: [{link_id, amount}], date?, updated_by } — 'to be billed' bilties become owed."""
+    return await _pl(bill_bilties, ledger_id, await request.json())
 
 
 @app.post("/api/ledger/party-ledgers/{ledger_id}/sync")

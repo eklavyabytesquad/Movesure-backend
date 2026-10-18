@@ -13,8 +13,11 @@ Two kinds of ledger built from bilties (see migrations/024):
            come in through the Sync button or POST /party-ledgers/auto-add.
   custom — any name (MRM RAMKOLA); search any regular or manual bilty and add it.
 
-Every bilty in a ledger is ONE Sales voucher:
+Every BILLED bilty in a ledger is ONE Sales voucher:
     Dr <party ledger>  (a bill, reference_no = GR no)  /  Cr 'Freight Income'
+A paid bilty booked with total = 0 is "to be billed": it sits in the ledger with
+no voucher (nothing owed yet) until its amount is entered — bill_bilties() —
+after which it is owed like any other (migrations/025 records amount_source).
 so balances, statements, bill-wise payments, Day Book and edit/cancel all work
 exactly like every other ledger. Payments: POST /party-ledgers/{id}/collect.
 A bilty can be in only one ledger at a time (unique index), so nothing is
@@ -46,6 +49,26 @@ MANUAL_COLS = "id, gr_no, created_at, branch_id, station, consignor, consignee, 
 LINK_COLS = ("id, ledger_id, bilty_type, bilty_id, gr_no, bilty_date, consignor, consignee, payment_mode, "
              "amount, voucher_id, bill_reference_id, added_via, is_active, added_by, created_at")
 REQUIRED_PAYMENT = {"consignor": "paid", "consignee": "to-pay"}
+
+
+_billing_supported: bool | None = None
+
+
+def billing_supported(sb) -> bool:
+    """ledger_bilties.amount_source / billed_at / billed_by exist after migration 025."""
+    global _billing_supported
+    if _billing_supported:
+        return True
+    try:
+        sb.table("ledger_bilties").select("amount_source").limit(1).execute()
+        _billing_supported = True
+    except Exception:
+        _billing_supported = False
+    return _billing_supported
+
+
+def _link_cols(sb) -> str:
+    return LINK_COLS + (", amount_source, billed_at, billed_by" if billing_supported(sb) else "")
 
 
 def _now() -> str:
@@ -249,79 +272,107 @@ def _last_sales_seq(sb, branch_id: str) -> int:
     return last_voucher_seq(sb, branch_id, "sales")
 
 
+def _post_vouchers(sb, ledger: dict, freight_id: str, items: list[dict], user_id: str,
+                   via: str, v_ids: list, bill_ids: list) -> tuple[dict, dict]:
+    """Post Sales vouchers (Dr party bill / Cr Freight Income) for items with amount > 0,
+    in 3 batched inserts. Appends created ids to v_ids / bill_ids so the caller can roll
+    back. Returns ({key: voucher_id}, {key: bill_id}), key = (bilty_type, bilty_id)."""
+    payable = [b for b in items if b["amount"] > 0]
+    v_by_key, bill_by_key = {}, {}
+    if not payable:
+        return v_by_key, bill_by_key
+    with_source = source_supported(sb)
+    for attempt in range(2):
+        seq = _last_sales_seq(sb, ledger["branch_id"])
+        rows = []
+        for i, b in enumerate(payable, start=1):
+            row = {
+                "branch_id": ledger["branch_id"], "voucher_type": "sales",
+                "voucher_no": f"{VOUCHER_PREFIX['sales']}{str(seq + i).zfill(4)}",
+                "voucher_date": b.get("voucher_date") or b.get("bilty_date") or today_ist(),
+                "narration": f"Bilty {b['gr_no']} - {b.get('consignor') or ''} to {b.get('consignee') or ''}".strip(),
+                "reference_no": b["gr_no"], "total_amount": b["amount"], "created_by": user_id,
+            }
+            if with_source:
+                row["source"] = {"action": "bilty", "bilty_type": b["bilty_type"],
+                                 "bilty_id": b["bilty_id"], "gr_no": b["gr_no"]}
+            rows.append(row)
+        try:
+            ins = sb.table("vouchers").insert(rows).execute().data or []
+            break
+        except Exception as exc:
+            if attempt == 0 and "vouchers_branch_type_no_unique" in str(exc):
+                continue          # someone took the same numbers — renumber once
+            raise
+    no_to_key = {r["voucher_no"]: (b["bilty_type"], b["bilty_id"]) for r, b in zip(rows, payable)}
+    for v in ins:
+        v_by_key[no_to_key[v["voucher_no"]]] = v["id"]
+        v_ids.append(v["id"])
+
+    bills = sb.table("ledger_bill_references").insert([{
+        "ledger_id": ledger["id"], "reference_no": b["gr_no"],
+        "reference_date": b.get("voucher_date") or b.get("bilty_date") or today_ist(),
+        "bill_amount": b["amount"], "balance_amount": b["amount"], "entry_type": "dr",
+        "source_table": "bilty" if b["bilty_type"] == "regular" else "station_bilty_summary",
+        "source_id": b["bilty_id"],
+        "metadata": {"gr_no": b["gr_no"], "bilty_type": b["bilty_type"], "consignor": b.get("consignor"),
+                     "consignee": b.get("consignee"), "payment_mode": b["payment_mode"]},
+        "created_by": user_id,
+    } for b in payable]).execute().data or []
+    for bl in bills:
+        key = ("regular" if bl["source_table"] == "bilty" else "manual", bl["source_id"])
+        bill_by_key[key] = bl["id"]
+        bill_ids.append(bl["id"])
+
+    entries = []
+    for b in payable:
+        key = (b["bilty_type"], b["bilty_id"])
+        entries += [
+            {"voucher_id": v_by_key[key], "ledger_id": ledger["id"], "entry_type": "dr",
+             "amount": b["amount"], "bill_reference_id": bill_by_key[key], "bill_allocation_type": "new_ref"},
+            {"voucher_id": v_by_key[key], "ledger_id": freight_id, "entry_type": "cr", "amount": b["amount"]},
+        ]
+    sb.table("voucher_entries").insert(entries).execute()
+
+    try:
+        sb.table("ledger_audit_log").insert([{
+            "entity_type": "voucher", "entity_id": vid, "action": "create", "old_data": None,
+            "new_data": {"via": f"party_ledger/{via}", "ledger_id": ledger["id"]}, "changed_by": user_id,
+        } for vid in v_by_key.values()]).execute()
+    except Exception as exc:
+        print(f"party ledger audit log failed: {exc}")
+    return v_by_key, bill_by_key
+
+
+def _rollback(sb, v_ids: list, bill_ids: list) -> None:
+    for part in _chunks(v_ids, 200):
+        sb.table("vouchers").delete().in_("id", part).execute()     # entries cascade
+    for part in _chunks(bill_ids, 200):
+        sb.table("ledger_bill_references").delete().in_("id", part).execute()
+
+
+def _freight_ledger(ledger: dict, user_id: str) -> dict:
+    return get_or_create_named_ledger(ledger["branch_id"], FREIGHT_INCOME_LEDGER_NAME, DIRECT_INCOMES_GROUP_NAME, user_id)
+
+
 def _post_bilties(sb, profile: dict, bilties: list[dict], added_via: str, user_id: str | None) -> dict:
-    """Post each bilty as a Sales voucher (Dr party bill / Cr Freight Income) and
-    record the link — vouchers, bills, entries and links each go in one batched
-    insert per chunk; any failure rolls the chunk back."""
+    """Add bilties to the ledger. Bilties with an amount are posted as Sales vouchers;
+    zero-amount ones (paid but not billed yet) are linked as "to be billed".
+    Batched per chunk; any failure rolls the chunk back."""
     ledger = profile["ledger"]
     user_id = user_id or profile.get("created_by")
     if not user_id:
         return _err("created_by / added_by is required")
-    freight = get_or_create_named_ledger(ledger["branch_id"], FREIGHT_INCOME_LEDGER_NAME, DIRECT_INCOMES_GROUP_NAME, user_id)
+    freight = _freight_ledger(ledger, user_id)
     if freight["status"] != "success":
         return freight
-    freight_id = freight["data"]["id"]
-    with_source = source_supported(sb)
     added = []
 
     for chunk in _chunks(bilties):
-        payable = [b for b in chunk if b["amount"] > 0]
         v_ids, bill_ids = [], []
         try:
-            v_by_key, bill_by_key = {}, {}
-            if payable:
-                for attempt in range(2):
-                    seq = _last_sales_seq(sb, ledger["branch_id"])
-                    rows = []
-                    for i, b in enumerate(payable, start=1):
-                        row = {
-                            "branch_id": ledger["branch_id"], "voucher_type": "sales",
-                            "voucher_no": f"{VOUCHER_PREFIX['sales']}{str(seq + i).zfill(4)}",
-                            "voucher_date": b.get("bilty_date") or today_ist(),
-                            "narration": f"Bilty {b['gr_no']} - {b.get('consignor') or ''} to {b.get('consignee') or ''}".strip(),
-                            "reference_no": b["gr_no"], "total_amount": b["amount"], "created_by": user_id,
-                        }
-                        if with_source:
-                            row["source"] = {"action": "bilty", "bilty_type": b["bilty_type"],
-                                             "bilty_id": b["bilty_id"], "gr_no": b["gr_no"]}
-                        rows.append(row)
-                    try:
-                        ins = sb.table("vouchers").insert(rows).execute().data or []
-                        break
-                    except Exception as exc:
-                        if attempt == 0 and "vouchers_branch_type_no_unique" in str(exc):
-                            continue          # someone took the same numbers — renumber once
-                        raise
-                no_to_key = {r["voucher_no"]: (b["bilty_type"], b["bilty_id"]) for r, b in zip(rows, payable)}
-                for v in ins:
-                    v_by_key[no_to_key[v["voucher_no"]]] = v["id"]
-                    v_ids.append(v["id"])
-
-                bills = sb.table("ledger_bill_references").insert([{
-                    "ledger_id": ledger["id"], "reference_no": b["gr_no"],
-                    "reference_date": b.get("bilty_date") or today_ist(),
-                    "bill_amount": b["amount"], "balance_amount": b["amount"], "entry_type": "dr",
-                    "source_table": "bilty" if b["bilty_type"] == "regular" else "station_bilty_summary",
-                    "source_id": b["bilty_id"],
-                    "metadata": {"gr_no": b["gr_no"], "bilty_type": b["bilty_type"], "consignor": b.get("consignor"),
-                                 "consignee": b.get("consignee"), "payment_mode": b["payment_mode"]},
-                    "created_by": user_id,
-                } for b in payable]).execute().data or []
-                for bl in bills:
-                    key = ("regular" if bl["source_table"] == "bilty" else "manual", bl["source_id"])
-                    bill_by_key[key] = bl["id"]
-                    bill_ids.append(bl["id"])
-
-                entries = []
-                for b in payable:
-                    key = (b["bilty_type"], b["bilty_id"])
-                    entries += [
-                        {"voucher_id": v_by_key[key], "ledger_id": ledger["id"], "entry_type": "dr",
-                         "amount": b["amount"], "bill_reference_id": bill_by_key[key], "bill_allocation_type": "new_ref"},
-                        {"voucher_id": v_by_key[key], "ledger_id": freight_id, "entry_type": "cr", "amount": b["amount"]},
-                    ]
-                sb.table("voucher_entries").insert(entries).execute()
-
+            v_by_key, bill_by_key = _post_vouchers(sb, ledger, freight["data"]["id"], chunk, user_id,
+                                                   added_via, v_ids, bill_ids)
             links = []
             for b in chunk:
                 key = (b["bilty_type"], b["bilty_id"])
@@ -334,22 +385,11 @@ def _post_bilties(sb, profile: dict, bilties: list[dict], added_via: str, user_i
                 })
             sb.table("ledger_bilties").insert(links).execute()
         except Exception as exc:
-            for part in _chunks(v_ids, 200):
-                sb.table("vouchers").delete().in_("id", part).execute()     # entries cascade
-            for part in _chunks(bill_ids, 200):
-                sb.table("ledger_bill_references").delete().in_("id", part).execute()
+            _rollback(sb, v_ids, bill_ids)
             msg = str(exc)
             if "uq_ledger_bilties_active" in msg:
                 msg = "one of these bilties was just added to a ledger by someone else — refresh and try again"
             return _err(f"Could not add bilties: {msg}", added=added)
-
-        try:
-            sb.table("ledger_audit_log").insert([{
-                "entity_type": "voucher", "entity_id": vid, "action": "create", "old_data": None,
-                "new_data": {"via": f"party_ledger/{added_via}", "ledger_id": ledger["id"]}, "changed_by": user_id,
-            } for vid in v_ids]).execute() if v_ids else None
-        except Exception as exc:
-            print(f"party ledger audit log failed: {exc}")
         added += [b["gr_no"] for b in chunk]
 
     return {"status": "success", "added": added}
@@ -470,8 +510,11 @@ def update_party_profile(ledger_id: str, data: dict) -> dict:
 
 
 def _link_stats(sb, ledger_id: str) -> dict:
-    rows = _paged(lambda: sb.table("ledger_bilties").select("amount").eq("ledger_id", ledger_id).eq("is_active", True))
-    return {"bilty_count": len(rows), "bilty_total": round(sum(float(r["amount"] or 0) for r in rows), 2)}
+    rows = _paged(lambda: sb.table("ledger_bilties").select("amount, voucher_id").eq("ledger_id", ledger_id)
+                  .eq("is_active", True))
+    unbilled = [r for r in rows if not r.get("voucher_id")]
+    return {"bilty_count": len(rows), "bilty_total": round(sum(float(r["amount"] or 0) for r in rows), 2),
+            "to_be_billed_count": len(unbilled)}
 
 
 def list_party_ledgers(branch_id: str | None = None, kind: str | None = None) -> dict:
@@ -526,15 +569,24 @@ def get_party_ledger(ledger_id: str) -> dict:
     }
 
 
+BILLING_FILTERS = {
+    "to_be_billed": {"to_be_billed"}, "unpaid": {"unpaid"}, "part_paid": {"part_paid"}, "paid": {"paid"},
+    "open": {"unpaid", "part_paid"}, "settled": {"paid"}, "billed": {"unpaid", "part_paid", "paid"},
+}
+
+
 def list_ledger_bilties(ledger_id: str, status: str | None = None, q: str | None = None,
                         page: int = 1, page_size: int = 50) -> dict:
-    """Bilties in a ledger with their bill balance. status: open | settled (unpaid / fully paid)."""
+    """Bilties in a ledger with their billing state:
+         billing_status = to_be_billed (no amount yet) | unpaid | part_paid | paid
+       status filter: to_be_billed | unpaid | part_paid | paid | open (unpaid + part_paid) | settled | billed"""
     sb = get_supabase()
     page, page_size = max(1, page), min(max(1, page_size), 200)
     term = _safe_term(q)
+    cols = _link_cols(sb)
 
     def base():
-        x = sb.table("ledger_bilties").select(LINK_COLS).eq("ledger_id", ledger_id).eq("is_active", True)
+        x = sb.table("ledger_bilties").select(cols).eq("ledger_id", ledger_id).eq("is_active", True)
         if term:
             x = x.or_(f"gr_no.ilike.%{term}%,consignor.ilike.%{term}%,consignee.ilike.%{term}%")
         return x.order("bilty_date", desc=True)
@@ -542,19 +594,36 @@ def list_ledger_bilties(ledger_id: str, status: str | None = None, q: str | None
     rows = _paged(base)
     bills = {}
     for part in _chunks([r["bill_reference_id"] for r in rows if r.get("bill_reference_id")], 200):
-        for bl in sb.table("ledger_bill_references").select("id, balance_amount, is_settled").in_("id", part).execute().data or []:
+        for bl in sb.table("ledger_bill_references").select("id, bill_amount, balance_amount, is_settled") \
+                .in_("id", part).execute().data or []:
             bills[bl["id"]] = bl
+    void = _void_bills(sb, list(bills))
     for r in rows:
         bl = bills.get(r.get("bill_reference_id"))
-        r["balance_amount"] = float(bl["balance_amount"]) if bl else 0.0
-        r["is_settled"] = bool(bl["is_settled"]) if bl else True
-    if status in ("open", "settled"):
-        rows = [r for r in rows if r["is_settled"] == (status == "settled")]
+        if not r.get("voucher_id") or not bl or bl["id"] in void:
+            r.update({"billing_status": "to_be_billed", "billed_amount": 0.0, "balance_amount": 0.0,
+                      "paid_amount": 0.0, "is_settled": False})
+            continue
+        billed, bal = float(bl["bill_amount"]), float(bl["balance_amount"])
+        r.update({"billed_amount": billed, "balance_amount": bal, "paid_amount": round(billed - bal, 2),
+                  "is_settled": bal <= 0,
+                  "billing_status": "paid" if bal <= 0 else ("unpaid" if bal >= billed else "part_paid")})
+    if status:
+        wanted = BILLING_FILTERS.get(status)
+        if wanted is None:
+            return _err(f"status must be one of {sorted(BILLING_FILTERS)}")
+        rows = [r for r in rows if r["billing_status"] in wanted]
     total = len(rows)
     return {"status": "success", "data": {
         "rows": rows[(page - 1) * page_size: page * page_size], "total": total, "page": page, "page_size": page_size,
-        "open_total": round(sum(r["balance_amount"] for r in rows if not r["is_settled"]), 2),
+        "open_total": round(sum(r["balance_amount"] for r in rows if r["billing_status"] in ("unpaid", "part_paid")), 2),
+        "to_be_billed_count": sum(1 for r in rows if r["billing_status"] == "to_be_billed"),
     }}
+
+
+def _void_bills(sb, bill_ids: list[str]) -> set[str]:
+    from services.ledger.bill_reference_service import _void_bill_ids
+    return _void_bill_ids(sb, bill_ids)
 
 
 def _safe_term(q) -> str:
@@ -626,21 +695,124 @@ def remove_bilty(ledger_id: str, link_id: str, user_id: str | None = None, reaso
 
 
 def _refresh_link(sb, link: dict, b: dict, user_id: str | None) -> dict:
-    """Bilty amount changed after it was posted — move the voucher + bill to the new amount."""
-    new_amount = b["amount"]
-    if not link.get("voucher_id") or new_amount <= 0:
-        return _err("amount can't be refreshed automatically (no voucher, or new amount is 0) — remove and re-add")
-    entries = sb.table("voucher_entries").select("id, ledger_id, entry_type, bill_reference_id, bill_allocation_type") \
-        .eq("voucher_id", link["voucher_id"]).execute().data or []
-    res = update_voucher(link["voucher_id"], {
-        "entries": [{**e, "amount": new_amount} for e in entries],
-        "updated_by": user_id, "edit_reason": f"Bilty {link['gr_no']} amount changed",
-    })
-    if res["status"] == "success":
-        sb.table("ledger_bilties").update({"amount": new_amount, "payment_mode": b["payment_mode"],
-                                           "consignor": b.get("consignor"), "consignee": b.get("consignee"),
-                                           "updated_at": _now()}).eq("id", link["id"]).execute()
-    return res
+    """The bilty's own total changed after it was added — follow it, unless the
+    amount was entered at billing time in the ledger (amount_source = 'manual')."""
+    if link.get("amount_source") == "manual":
+        return {"status": "skipped", "message": "amount was entered at billing — not taken from the bilty"}
+    return _set_link_amount(sb, link, b["amount"], user_id, source="bilty",
+                            reason=f"Bilty {link['gr_no']} amount changed", bilty=b)
+
+
+def _set_link_amount(sb, link: dict, new_amount: float, user_id: str | None, source: str,
+                     reason: str, bilty: dict | None = None, voucher_date: str | None = None) -> dict:
+    """Move one ledger bilty to `new_amount`:
+         no voucher yet + amount > 0 -> post its Sales voucher (it is now billed / owed)
+         voucher + amount > 0        -> edit the voucher; its bill follows (refused below what's paid)
+         voucher + amount = 0        -> cancel the voucher, back to "to be billed" (refused if paid)"""
+    new_amount = round(float(new_amount or 0), 2)
+    if new_amount < 0:
+        return _err("amount can't be negative")
+    voucher_active = False
+    if link.get("voucher_id"):
+        v = sb.table("vouchers").select("is_active").eq("id", link["voucher_id"]).execute().data
+        voucher_active = bool(v and v[0]["is_active"])
+
+    update = {"amount": new_amount, "updated_at": _now()}
+    if bilty:
+        update.update({"payment_mode": bilty["payment_mode"], "consignor": bilty.get("consignor"),
+                       "consignee": bilty.get("consignee")})
+    if billing_supported(sb):
+        update["amount_source"] = source
+        if source == "manual":
+            update.update({"billed_at": _now(), "billed_by": user_id})
+
+    if voucher_active and new_amount > 0:
+        entries = sb.table("voucher_entries").select("id, ledger_id, entry_type, bill_reference_id, bill_allocation_type") \
+            .eq("voucher_id", link["voucher_id"]).execute().data or []
+        body = {"entries": [{**e, "amount": new_amount} for e in entries], "updated_by": user_id, "edit_reason": reason}
+        if voucher_date:
+            body["voucher_date"] = voucher_date
+        res = update_voucher(link["voucher_id"], body)
+        if res["status"] != "success":
+            return res
+    elif voucher_active and new_amount == 0:
+        res = cancel_voucher(link["voucher_id"], user_id, reason)
+        if res["status"] != "success":
+            return res
+        update.update({"voucher_id": None, "bill_reference_id": None})
+    elif new_amount > 0:
+        led = sb.table("ledgers").select("id, name, branch_id").eq("id", link["ledger_id"]).execute().data
+        if not led:
+            return _err("Ledger not found", 404)
+        user_id = user_id or link.get("added_by")
+        freight = _freight_ledger(led[0], user_id)
+        if freight["status"] != "success":
+            return freight
+        item = {k: link.get(k) for k in ("bilty_type", "bilty_id", "gr_no", "bilty_date", "consignor",
+                                         "consignee", "payment_mode")}
+        item.update({"amount": new_amount, "voucher_date": voucher_date})
+        v_ids, bill_ids = [], []
+        try:
+            v_by_key, bill_by_key = _post_vouchers(sb, led[0], freight["data"]["id"], [item], user_id,
+                                                   "billing", v_ids, bill_ids)
+            key = (link["bilty_type"], link["bilty_id"])
+            update.update({"voucher_id": v_by_key[key], "bill_reference_id": bill_by_key[key]})
+            sb.table("ledger_bilties").update(update).eq("id", link["id"]).execute()
+        except Exception as exc:
+            _rollback(sb, v_ids, bill_ids)
+            return _err(f"Could not bill {link['gr_no']}: {exc}")
+        return {"status": "success", "gr_no": link["gr_no"], "amount": new_amount}
+
+    sb.table("ledger_bilties").update(update).eq("id", link["id"]).execute()
+    return {"status": "success", "gr_no": link["gr_no"], "amount": new_amount}
+
+
+def bill_bilties(ledger_id: str, data: dict) -> dict:
+    """
+    Enter billed amounts on bilties in this ledger (paid bilties are "to be billed").
+    data = { items: [{link_id, amount}], date? (bill date, default: each bilty's date), updated_by }
+      amount > 0 on a "to be billed" bilty -> it's now owed (Sales voucher posted)
+      amount > 0 on a billed bilty         -> amount corrected (refused below what's already paid)
+      amount = 0                           -> back to "to be billed" (refused if anything is paid)
+    Amounts entered here are never overwritten by the bilty's own total later.
+    """
+    sb = get_supabase()
+    items = data.get("items") or []
+    if not items:
+        return _err("items: [{link_id, amount}] is required")
+    user_id = data.get("updated_by")
+    if not user_id:
+        return _err("updated_by is required")
+    if not billing_supported(sb):
+        # without amount_source a later sync would see the bilty's own 0 total and undo the billing
+        return _err("Billing needs migrations/025_ledger_bilties_billing.sql — run it first", 500)
+    ids = [i.get("link_id") for i in items if i.get("link_id")]
+    links = {}
+    for part in _chunks(ids, 200):
+        for l in sb.table("ledger_bilties").select(_link_cols(sb)).in_("id", part).eq("ledger_id", ledger_id) \
+                .eq("is_active", True).execute().data or []:
+            links[l["id"]] = l
+    done, failed = [], []
+    for it in items:
+        l = links.get(it.get("link_id"))
+        if not l:
+            failed.append({"link_id": it.get("link_id"), "reason": "bilty not found in this ledger"})
+            continue
+        try:
+            amt = float(it.get("amount"))
+        except (TypeError, ValueError):
+            failed.append({"gr_no": l["gr_no"], "reason": "amount must be a number"})
+            continue
+        r = _set_link_amount(sb, l, amt, user_id, source="manual",
+                             reason=f"Billed {l['gr_no']} at ₹{amt:,.2f}", voucher_date=data.get("date"))
+        if r["status"] == "success":
+            done.append({"gr_no": l["gr_no"], "amount": round(amt, 2)})
+        else:
+            failed.append({"gr_no": l["gr_no"], "reason": r["message"]})
+    return {"status": "success" if done or not failed else "error",
+            "message": f"{len(done)} bilty(s) billed" + (f", {len(failed)} failed" if failed else ""),
+            "billed": done, "failed": failed, "billed_total": round(sum(d["amount"] for d in done), 2),
+            **({} if done or not failed else {"status_code": 400})}
 
 
 def sync_party_ledger(ledger_id: str, data: dict) -> dict:
@@ -665,7 +837,7 @@ def sync_party_ledger(ledger_id: str, data: dict) -> dict:
         linked = _active_links(sb, [(b["bilty_type"], b["bilty_id"]) for b in cands])
         new_items = [b for b in cands if (b["bilty_type"], b["bilty_id"]) not in linked]
 
-    mine = _paged(lambda: sb.table("ledger_bilties").select(LINK_COLS).eq("ledger_id", ledger_id).eq("is_active", True))
+    mine = _paged(lambda: sb.table("ledger_bilties").select(_link_cols(sb)).eq("ledger_id", ledger_id).eq("is_active", True))
     current = _fetch_bilties(sb, [(l["bilty_type"], l["bilty_id"]) for l in mine])
     changed, not_matching = [], []
     for l in mine:
@@ -676,7 +848,7 @@ def sync_party_ledger(ledger_id: str, data: dict) -> dict:
         ok, why = qualifies(profile, b)
         if not ok:
             not_matching.append({"link_id": l["id"], "gr_no": l["gr_no"], "reason": why})
-        if round(float(l["amount"] or 0), 2) != b["amount"]:
+        if l.get("amount_source") != "manual" and round(float(l["amount"] or 0), 2) != b["amount"]:
             changed.append({"link_id": l["id"], "gr_no": l["gr_no"], "old_amount": float(l["amount"] or 0),
                             "new_amount": b["amount"], "_link": l, "_bilty": b})
 
@@ -705,7 +877,7 @@ def sync_party_ledger(ledger_id: str, data: dict) -> dict:
     fails = []
     for c in changed:
         r = _refresh_link(sb, c["_link"], c["_bilty"], user_id)
-        if r["status"] != "success":
+        if r["status"] == "error":
             fails.append({"gr_no": c["gr_no"], "reason": r["message"]})
     result["skipped"] = fails
     result["message"] = (f"{result['added_count']} bilty(s) added, {len(changed) - len(fails)} amount(s) updated"
@@ -732,7 +904,8 @@ def on_bilty_saved(bilty_type: str, bilty_id: str, user_id: str | None = None) -
         link = _active_links(sb, [(bilty_type, bilty_id)]).get((bilty_type, bilty_id))
         if link:
             if round(float(link["amount"] or 0), 2) != b["amount"]:
-                return _refresh_link(sb, link, b, user_id)
+                full = sb.table("ledger_bilties").select(_link_cols(sb)).eq("id", link["id"]).execute().data
+                return _refresh_link(sb, full[0] if full else link, b, user_id)
             return {"status": "skipped", "message": "already in a ledger, unchanged"}
         if not profiles:
             return {"status": "skipped", "message": "no auto-add party ledgers"}
