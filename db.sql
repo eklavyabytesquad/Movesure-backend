@@ -1648,3 +1648,45 @@ CREATE TABLE public.companies (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT companies_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.party_ledger_profiles (
+  ledger_id uuid NOT NULL,
+  kind character varying(10) NOT NULL CHECK (kind::text = ANY (ARRAY['party'::character varying, 'custom'::character varying]::text[])),
+  party_type character varying(10) CHECK (party_type::text = ANY (ARRAY['consignor'::character varying, 'consignee'::character varying]::text[])),
+  party_id uuid,
+  party_name character varying NOT NULL,
+  match_names text[] NOT NULL DEFAULT '{}'::text[],
+  gstin character varying,
+  auto_add boolean NOT NULL DEFAULT true,
+  own_branch_only boolean NOT NULL DEFAULT false,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT party_ledger_profiles_pkey PRIMARY KEY (ledger_id),
+  CONSTRAINT party_ledger_profiles_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE TABLE public.ledger_bilties (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  ledger_id uuid NOT NULL,
+  bilty_type character varying(10) NOT NULL CHECK (bilty_type::text = ANY (ARRAY['regular'::character varying, 'manual'::character varying]::text[])),
+  bilty_id uuid NOT NULL,
+  gr_no character varying NOT NULL,
+  bilty_date date,
+  consignor character varying,
+  consignee character varying,
+  payment_mode character varying,
+  amount numeric NOT NULL DEFAULT 0,
+  voucher_id uuid,
+  bill_reference_id uuid,
+  added_via character varying(10) NOT NULL DEFAULT 'manual'::character varying,
+  is_active boolean NOT NULL DEFAULT true,
+  added_by uuid,
+  removed_by uuid,
+  removed_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ledger_bilties_pkey PRIMARY KEY (id),
+  CONSTRAINT ledger_bilties_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT ledger_bilties_voucher_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT ledger_bilties_bill_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);

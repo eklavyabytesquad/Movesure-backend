@@ -112,25 +112,32 @@ def _validate_entries(entries_in: list[dict]) -> tuple[float, str | None]:
     return dr_total, None
 
 
-def _next_voucher_no(sb, branch_id: str, voucher_type: str) -> str:
+def last_voucher_seq(sb, branch_id: str, voucher_type: str) -> int:
+    """Highest number used for this branch + type. voucher_no is text, so a plain
+    text sort puts SAL10000 before SAL9999 — check the longest numbers first
+    (party ledger imports use thousands of sales numbers)."""
     prefix = VOUCHER_PREFIX[voucher_type]
-    res = (
-        sb.table("vouchers")
-        .select("voucher_no")
-        .eq("branch_id", branch_id)
-        .eq("voucher_type", voucher_type)
-        .ilike("voucher_no", f"{prefix}%")
-        .order("voucher_no", desc=True)
-        .limit(1)
-        .execute()
-    )
-    last_seq = 0
-    if res.data:
-        try:
-            last_seq = int(res.data[0]["voucher_no"][len(prefix):])
-        except (ValueError, IndexError):
-            last_seq = 0
-    return f"{prefix}{str(last_seq + 1).zfill(4)}"
+    for width in range(9, 3, -1):
+        res = (
+            sb.table("vouchers")
+            .select("voucher_no")
+            .eq("branch_id", branch_id)
+            .eq("voucher_type", voucher_type)
+            .like("voucher_no", prefix + "_" * width)
+            .order("voucher_no", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            try:
+                return int(res.data[0]["voucher_no"][len(prefix):])
+            except (ValueError, IndexError):
+                continue
+    return 0
+
+
+def _next_voucher_no(sb, branch_id: str, voucher_type: str) -> str:
+    return f"{VOUCHER_PREFIX[voucher_type]}{str(last_voucher_seq(sb, branch_id, voucher_type) + 1).zfill(4)}"
 
 
 def list_vouchers(branch_id: str | None = None, voucher_type: str | None = None,

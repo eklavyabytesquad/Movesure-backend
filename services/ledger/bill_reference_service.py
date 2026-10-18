@@ -39,15 +39,17 @@ def _err(msg: str, code: int = 400) -> dict:
 
 def _void_bill_ids(sb, bill_ids: list[str]) -> set[str]:
     """Bills whose raising (new_ref) voucher has been cancelled."""
-    if not bill_ids:
-        return set()
-    raising = sb.table("voucher_entries").select("bill_reference_id, voucher_id") \
-        .in_("bill_reference_id", bill_ids).eq("bill_allocation_type", "new_ref").execute().data or []
+    raising = []
+    for i in range(0, len(bill_ids), 200):          # chunked: big in_() lists overflow the URL
+        raising += sb.table("voucher_entries").select("bill_reference_id, voucher_id") \
+            .in_("bill_reference_id", bill_ids[i:i + 200]).eq("bill_allocation_type", "new_ref").execute().data or []
     if not raising:
         return set()
     v_ids = list({r["voucher_id"] for r in raising})
-    inactive = {v["id"] for v in (sb.table("vouchers").select("id, is_active").in_("id", v_ids).execute().data or [])
-                if not v["is_active"]}
+    inactive = set()
+    for i in range(0, len(v_ids), 200):
+        inactive |= {v["id"] for v in (sb.table("vouchers").select("id, is_active").in_("id", v_ids[i:i + 200]).execute().data or [])
+                     if not v["is_active"]}
     return {r["bill_reference_id"] for r in raising if r["voucher_id"] in inactive}
 
 

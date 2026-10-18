@@ -376,10 +376,12 @@ def _active_voucher_ids(sb, entries: list[dict]) -> set[str]:
     """Given a list of rows with a voucher_id, return the subset of those
     voucher_ids whose voucher is still active (not cancelled)."""
     voucher_ids = list({e["voucher_id"] for e in entries})
-    if not voucher_ids:
-        return set()
-    vouchers = sb.table("vouchers").select("id, is_active").in_("id", voucher_ids).execute().data or []
-    return {v["id"] for v in vouchers if v["is_active"]}
+    active = set()
+    # chunked: a single in_() with ~1,000+ ids overflows the request URL (party ledgers get there)
+    for i in range(0, len(voucher_ids), 200):
+        vouchers = sb.table("vouchers").select("id, is_active").in_("id", voucher_ids[i:i + 200]).execute().data or []
+        active |= {v["id"] for v in vouchers if v["is_active"]}
+    return active
 
 
 def merge_ledgers(source_id: str, into_ledger_id: str, user_id: str | None = None) -> dict:

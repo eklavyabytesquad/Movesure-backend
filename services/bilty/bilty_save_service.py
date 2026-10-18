@@ -10,6 +10,7 @@ from time import sleep
 from services.supabase_client import get_supabase
 from services.thread_pool import shared_pool
 from services.bilty.bilty_notification_service import send_first_booking_notification
+from services.ledger.party_ledger_service import on_bilty_saved
 
 # Shared thread pool for background tasks (rate save, party auto-create)
 # Uses the centralized pool from services.thread_pool
@@ -496,6 +497,7 @@ def save_bilty(data: dict) -> dict:
                         if notify_result["status"] == "error":
                             print(f"First-booking notification error: {notify_result['message']}")
 
+
                     return  # success — exit retry loop
                 except OSError as e:
                     if attempt == 0:
@@ -508,6 +510,10 @@ def save_bilty(data: dict) -> dict:
                     return  # non-retriable — exit
 
         shared_pool.submit(_post_save)
+        # Party ledgers (own task so a failure in the steps above can't skip it):
+        # new bilty -> matching auto-add ledger; edited bilty -> ledger follows the new amount.
+        # on_bilty_saved never raises.
+        shared_pool.submit(on_bilty_saved, "regular", saved_bilty["id"], data.get("staff_id"))
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # Frontend gets city names back from server for PDF generation.

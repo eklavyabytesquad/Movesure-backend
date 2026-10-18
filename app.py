@@ -167,6 +167,11 @@ from services.ledger.labour_kharcha_service import (
     list_labour, create_labour, get_labour_detail, add_labour_expense, pay_labour,
 )
 from services.ledger.cash_manager_service import get_cash_manager, add_cash_expense
+from services.ledger.party_ledger_service import (
+    create_party_ledger, update_party_profile, list_party_ledgers, get_party_ledger,
+    list_ledger_bilties, add_bilties, remove_bilty, sync_party_ledger, on_bilty_saved,
+    collect_from_party, search_bilties, search_parties, name_variants,
+)
 from services.ledger.delivery_service import get_delivery_income, get_delivery_expense, get_delivery_summary
 from services.ledger.bank_service import list_banks, set_default_bank
 from services.ledger.overview_service import get_ledger_overview
@@ -3973,6 +3978,110 @@ async def ledger_labour_pay(request: Request, ledger_id: str = Path(...)):
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Party ledgers (consignor / consignee) + Custom bilty ledgers ──
+
+async def _pl(func, *args):
+    try:
+        return _response(await _run(func, *args))
+    except Exception as e:
+        log.exception("Error in %s: %s", func.__name__, e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/party-ledgers")
+async def party_ledgers_list(branch_id: str = Query(None), kind: str = Query(None)):
+    """Party + custom bilty ledgers with balance and bilty totals. kind: party | custom"""
+    return await _pl(list_party_ledgers, branch_id, kind)
+
+
+@app.post("/api/ledger/party-ledgers")
+async def party_ledgers_create(request: Request):
+    """Create a party ledger (imports the party's existing bilties) or a custom ledger."""
+    return await _pl(create_party_ledger, await request.json())
+
+
+@app.get("/api/ledger/party-ledgers/parties")
+async def party_ledgers_parties(type: str = Query(...), q: str = Query("")):
+    """Consignor / consignee master search for the 'New party ledger' picker."""
+    return await _pl(search_parties, type, q)
+
+
+@app.get("/api/ledger/party-ledgers/name-variants")
+async def party_ledgers_name_variants(type: str = Query(...), q: str = Query(...)):
+    """Every spelling of a party name on bilties, with counts — to fill match_names."""
+    return await _pl(name_variants, type, q)
+
+
+@app.get("/api/ledger/party-ledgers/bilty-search")
+async def party_ledgers_bilty_search(
+    q: str = Query(None), bilty_type: str = Query("both"), from_date: str = Query(None),
+    to_date: str = Query(None), payment_mode: str = Query(None), branch_id: str = Query(None),
+    limit: int = Query(50), group_id: str = Query(None),
+):
+    """Search regular + manual bilties (GR no / consignor / consignee, or a bilty group); each row says which ledger it's in."""
+    return await _pl(search_bilties, q, bilty_type, from_date, to_date, payment_mode, branch_id, limit, group_id)
+
+
+@app.post("/api/ledger/party-ledgers/auto-add")
+async def party_ledgers_auto_add(request: Request):
+    """Call after saving a MANUAL (station) bilty: { bilty_type: 'manual', bilty_id, user_id }."""
+    data = await request.json()
+    if data.get("bilty_type") not in ("regular", "manual") or not data.get("bilty_id"):
+        return JSONResponse(content={"status": "error", "message": "bilty_type and bilty_id are required"}, status_code=400)
+    try:
+        result = await _run(on_bilty_saved, data["bilty_type"], data["bilty_id"], data.get("user_id"))
+        return JSONResponse(content=result, status_code=200 if result.get("status") != "error" else 400)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/ledger/party-ledgers/{ledger_id}")
+async def party_ledgers_get(ledger_id: str = Path(...)):
+    return await _pl(get_party_ledger, ledger_id)
+
+
+@app.put("/api/ledger/party-ledgers/{ledger_id}/profile")
+async def party_ledgers_profile(request: Request, ledger_id: str = Path(...)):
+    """{ party_name?, match_names?, gstin?, auto_add?, own_branch_only?, updated_by }"""
+    return await _pl(update_party_profile, ledger_id, await request.json())
+
+
+@app.get("/api/ledger/party-ledgers/{ledger_id}/bilties")
+async def party_ledgers_bilties(ledger_id: str = Path(...), status: str = Query(None), q: str = Query(None),
+                                page: int = Query(1), page_size: int = Query(50)):
+    """Bilties in this ledger with bill balance. status: open | settled"""
+    return await _pl(list_ledger_bilties, ledger_id, status, q, page, page_size)
+
+
+@app.post("/api/ledger/party-ledgers/{ledger_id}/bilties")
+async def party_ledgers_add_bilties(request: Request, ledger_id: str = Path(...)):
+    """{ items: [{bilty_type: 'regular'|'manual', bilty_id}], added_by }"""
+    return await _pl(add_bilties, ledger_id, await request.json())
+
+
+@app.delete("/api/ledger/party-ledgers/{ledger_id}/bilties/{link_id}")
+async def party_ledgers_remove_bilty(ledger_id: str = Path(...), link_id: str = Path(...),
+                                     user_id: str = Query(None), reason: str = Query(None)):
+    return await _pl(remove_bilty, ledger_id, link_id, user_id, reason)
+
+
+@app.post("/api/ledger/party-ledgers/{ledger_id}/sync")
+async def party_ledgers_sync(request: Request, ledger_id: str = Path(...)):
+    """{ dry_run (default true), from_date?, to_date?, user_id } — preview / add the party's new bilties."""
+    return await _pl(sync_party_ledger, ledger_id, await request.json())
+
+
+@app.post("/api/ledger/party-ledgers/{ledger_id}/collect")
+async def party_ledgers_collect(request: Request, ledger_id: str = Path(...)):
+    """Payment received: { branch_id, amount, payment_mode, bank_ledger_id?, allocations?, bill_reference_id?, date?, narration?, created_by }"""
+    return await _pl(collect_from_party, ledger_id, await request.json())
+
+
+@app.put("/api/ledger/party-ledgers/{ledger_id}/collect/{voucher_id}")
+async def party_ledgers_collect_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(collect_from_party, ledger_id, voucher_id, request)
 
 
 # ── Party screen EDITS (same body as the create call) ───────────
