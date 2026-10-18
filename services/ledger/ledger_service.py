@@ -83,6 +83,14 @@ def _balance_label(group_nature: str | None, is_party_ledger: bool, balance_type
     return "Balance"
 
 
+def _name_taken(sb, branch_id: str, name: str, exclude_id: str | None = None) -> bool:
+    """Case-insensitive 'same name in this branch' check (ilike with the
+    wildcards escaped, so 'A_B' doesn't match 'AXB')."""
+    pattern = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = sb.table("ledgers").select("id, name").eq("branch_id", branch_id).ilike("name", pattern).execute().data or []
+    return any(r["id"] != exclude_id and r["name"].strip().lower() == name.strip().lower() for r in rows)
+
+
 def _signed(amount: float, side: str) -> float:
     """Dr is positive, Cr is negative — the one sign convention every
     balance calculation in this file uses internally."""
@@ -161,6 +169,8 @@ def create_ledger(data: dict, user_id: str | None = None) -> dict:
     sb = get_supabase()
     if not sb.table("ledger_groups").select("id").eq("id", group_id).execute().data:
         return {"status": "error", "message": "group_id not found", "status_code": 404}
+    if _name_taken(sb, branch_id, name):
+        return {"status": "error", "message": f"Ledger '{name}' already exists in this branch", "status_code": 409}
 
     row = {
         "branch_id": branch_id,
@@ -204,6 +214,12 @@ def update_ledger(ledger_id: str, data: dict, user_id: str | None = None) -> dic
     payload = {k: v for k, v in data.items() if k in allowed}
     if not payload:
         return {"status": "error", "message": "No updatable fields provided", "status_code": 400}
+    if "name" in payload:
+        payload["name"] = (payload["name"] or "").strip()
+        if not payload["name"]:
+            return {"status": "error", "message": "name can't be empty", "status_code": 400}
+        if _name_taken(sb, existing["branch_id"], payload["name"], exclude_id=ledger_id):
+            return {"status": "error", "message": f"Ledger '{payload['name']}' already exists in this branch", "status_code": 409}
     payload["updated_by"] = user_id
     payload["updated_at"] = _now()
 
@@ -216,12 +232,25 @@ def update_ledger(ledger_id: str, data: dict, user_id: str | None = None) -> dic
     return {"status": "success", "data": updated}
 
 
-def set_ledger_status(ledger_id: str, is_active: bool, user_id: str | None = None) -> dict:
+def set_ledger_status(ledger_id: str, is_active: bool, user_id: str | None = None, force: bool = False) -> dict:
+    """Deactivating a ledger that still has a balance is rejected unless force=True."""
     sb = get_supabase()
     existing_res = sb.table("ledgers").select(LEDGER_COLS).eq("id", ledger_id).execute().data
     if not existing_res:
         return {"status": "error", "message": "Ledger not found", "status_code": 404}
     existing = existing_res[0]
+
+    if not is_active and not force:
+        bal = get_ledger_balance(ledger_id)
+        if bal["status"] == "success" and bal["data"]["balance"] > 0:
+            b = bal["data"]
+            return {
+                "status": "error",
+                "message": f"Ledger '{existing['name']}' still has a balance of ₹{b['balance']:,.2f} {b['balance_type'].capitalize()} "
+                           f"— settle it first, or send force: true",
+                "status_code": 400,
+                "balance": b["balance"], "balance_type": b["balance_type"],
+            }
 
     sb.table("ledgers").update({
         "is_active": is_active, "updated_by": user_id, "updated_at": _now(),
@@ -264,7 +293,8 @@ def get_ledger_balance(ledger_id: str) -> dict:
             "balance": amount,
             "balance_type": side,
             **group_ctx,
-            "balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], side),
+            "balance_label": side.capitalize(),   # "Dr" / "Cr"
+            "balance_description": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], side),
         },
     }
 
@@ -280,10 +310,12 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
     ledger = ledger_res[0]
     group_ctx = _group_context(_all_groups_map(sb), ledger.get("group_id"))
 
+    from services.ledger.voucher_service import source_supported
+    v_cols = "voucher_no, voucher_type, voucher_date, narration, is_active" + (", source" if source_supported(sb) else "")
     rows = (
         sb.table("voucher_entries")
-        .select("id, entry_type, amount, narration, voucher_id, created_at, "
-                 "vouchers(voucher_no, voucher_type, voucher_date, narration, is_active)")
+        .select("id, entry_type, amount, narration, voucher_id, created_at, bill_reference_id, "
+                 f"bill_allocation_type, vouchers({v_cols})")
         .eq("ledger_id", ledger_id)
         .execute()
         .data or []
@@ -314,6 +346,9 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
             "amount": r["amount"],
             "running_balance": amount,
             "running_balance_type": side,
+            "bill_reference_id": r.get("bill_reference_id"),
+            "bill_allocation_type": r.get("bill_allocation_type"),
+            "source": v.get("source"),   # original create body (party screens), else null
         })
 
     closing_amount, closing_side = _split_signed(running)
@@ -329,8 +364,10 @@ def get_ledger_statement(ledger_id: str, from_date: str | None = None, to_date: 
             "closing_balance": closing_amount,
             "closing_balance_type": closing_side,
             **group_ctx,
-            "opening_balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], opening_side),
-            "closing_balance_label": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], closing_side),
+            "opening_balance_label": opening_side.capitalize(),   # "Dr" / "Cr"
+            "closing_balance_label": closing_side.capitalize(),
+            "opening_balance_description": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], opening_side),
+            "closing_balance_description": _balance_label(group_ctx["group_nature"], group_ctx["is_party_ledger"], closing_side),
         },
     }
 
@@ -343,3 +380,48 @@ def _active_voucher_ids(sb, entries: list[dict]) -> set[str]:
         return set()
     vouchers = sb.table("vouchers").select("id, is_active").in_("id", voucher_ids).execute().data or []
     return {v["id"] for v in vouchers if v["is_active"]}
+
+
+def merge_ledgers(source_id: str, into_ledger_id: str, user_id: str | None = None) -> dict:
+    """Move every entry + bill of source_id into into_ledger_id, add the source's
+    opening balance to the target's, and deactivate the source — one transaction
+    (ledger_merge_ledgers(), migrations/023)."""
+    if not into_ledger_id:
+        return {"status": "error", "message": "into_ledger_id is required", "status_code": 400}
+    sb = get_supabase()
+    rows = sb.table("ledgers").select(LEDGER_COLS).in_("id", [source_id, into_ledger_id]).execute().data or []
+    by_id = {r["id"]: r for r in rows}
+    if source_id not in by_id:
+        return {"status": "error", "message": "Ledger not found", "status_code": 404}
+    if into_ledger_id not in by_id:
+        return {"status": "error", "message": "into_ledger_id not found", "status_code": 404}
+    try:
+        res = sb.rpc("ledger_merge_ledgers", {"p_source": source_id, "p_target": into_ledger_id, "p_user": user_id}).execute()
+    except Exception as exc:
+        msg = str(exc)
+        if "ledger_merge_ledgers" in msg and ("does not exist" in msg or "Could not find" in msg):
+            return {"status": "error", "message": "Ledger merge needs migrations/023_ledger_voucher_edit.sql — run it first", "status_code": 500}
+        if any(k in msg for k in ("merged into itself", "same branch", "Target ledger is inactive", "ledger not found")):
+            return {"status": "error", "message": _clean_pg(msg), "status_code": 400}
+        return {"status": "error", "message": f"Merge failed: {msg}", "status_code": 400}
+
+    moved = res.data or {}
+    write_audit_log(sb, "ledger", source_id, "deactivate", by_id[source_id],
+                    {"merged_into": into_ledger_id, **(moved if isinstance(moved, dict) else {})}, user_id)
+    write_audit_log(sb, "ledger", into_ledger_id, "update", by_id[into_ledger_id],
+                    {"merged_from": source_id, **(moved if isinstance(moved, dict) else {})}, user_id)
+    return {
+        "status": "success",
+        "message": f"'{by_id[source_id]['name']}' merged into '{by_id[into_ledger_id]['name']}'",
+        "data": {"source_id": source_id, "into_ledger_id": into_ledger_id,
+                 **(moved if isinstance(moved, dict) else {}),
+                 "balance": get_ledger_balance(into_ledger_id).get("data")},
+    }
+
+
+def _clean_pg(msg: str) -> str:
+    """Pull the RAISE EXCEPTION text out of a PostgREST error string."""
+    for key in ("'message': '", '"message": "'):
+        if key in msg:
+            return msg.split(key, 1)[1].split("'" if key.startswith("'") else '"', 1)[0]
+    return msg

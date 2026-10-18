@@ -11,7 +11,7 @@ under Sundry Debtors the first time it's needed).
 from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
-from services.ledger.voucher_service import create_voucher
+from services.ledger.voucher_service import save_party_voucher
 from services.ledger.ledger_helpers import (
     resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group,
     today_ist, month_name_from_date,
@@ -112,8 +112,10 @@ def get_transporter_detail(ledger_id: str) -> dict:
     }
 
 
-def raise_pf_bill(ledger_id: str, data: dict) -> dict:
+def raise_pf_bill(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'pf_bill' entry in place (same body as create).
+
     data = { branch_id, amount, reference_no, date?, due_date?,
               bill_month?, bill_year?, narration?, created_by }
 
@@ -145,7 +147,7 @@ def raise_pf_bill(ledger_id: str, data: dict) -> dict:
     bill_month = str(bill_month).strip().upper()
     bill_year = data.get("bill_year") or int(bill_date[:4])
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "sales",
         "voucher_date": bill_date,
@@ -162,11 +164,13 @@ def raise_pf_bill(ledger_id: str, data: dict) -> dict:
              }},
             {"ledger_id": pf_income["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
-    })
+    }, ledger_id, "pf_bill", data, voucher_id)
 
 
-def raise_payable_bill(ledger_id: str, data: dict) -> dict:
+def raise_payable_bill(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'payable_bill' entry in place (same body as create).
+
     The reverse of raise_pf_bill — for when THIS transporter has billed
     YOU (e.g. they carried freight for you and invoiced it), so you now
     owe them, tracked as its own bill on the SAME transporter ledger —
@@ -196,7 +200,7 @@ def raise_payable_bill(ledger_id: str, data: dict) -> dict:
 
     bill_date = data.get("date") or today_ist()
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "purchase",
         "voucher_date": bill_date,
@@ -212,7 +216,7 @@ def raise_payable_bill(ledger_id: str, data: dict) -> dict:
                  "due_date": data.get("due_date"),
              }},
         ],
-    })
+    }, ledger_id, "payable_bill", data, voucher_id)
 
 
 def get_transporters_summary(
@@ -315,6 +319,8 @@ def get_transporters_summary(
                 "total_they_owe_you": round(total_they_owe_you, 2),
                 "total_you_owe_them": round(total_you_owe_them, 2),
                 "net": round(total_they_owe_you - total_you_owe_them, 2),
+                "total_dr": round(total_they_owe_you, 2),   # Dr balances (they owe us)
+                "total_cr": round(total_you_owe_them, 2),   # Cr balances (we owe them)
                 "total_billed_in_period": round(total_billed_in_period, 2) if use_period_filter else None,
                 "total_outstanding_in_period": round(total_outstanding_in_period, 2) if use_period_filter else None,
             },
@@ -328,8 +334,10 @@ def get_transporters_summary(
     }
 
 
-def collect_payment(ledger_id: str, data: dict) -> dict:
+def collect_payment(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'collect' entry in place (same body as create).
+
     Money COLLECTED FROM this transporter.
     data = { branch_id, amount, payment_mode: 'cash'|'bank', bank_ledger_id?,
               bill_reference_id? (omit for an on-account collection not
@@ -355,7 +363,7 @@ def collect_payment(ledger_id: str, data: dict) -> dict:
     else:
         transporter_entry["bill_allocation_type"] = "on_account"
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "receipt",
         "voucher_date": data.get("date") or today_ist(),
@@ -365,11 +373,13 @@ def collect_payment(ledger_id: str, data: dict) -> dict:
             {"ledger_id": resolved["data"]["id"], "entry_type": "dr", "amount": amount},
             transporter_entry,
         ],
-    })
+    }, ledger_id, "collect", data, voucher_id)
 
 
-def give_payment(ledger_id: str, data: dict) -> dict:
+def give_payment(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'give' entry in place (same body as create).
+
     Money GIVEN TO this transporter — either a plain advance, or settling
     a payable bill raised via raise_payable_bill (pass its bill_reference_id
     to track this payment against that specific bill instead of an
@@ -398,7 +408,7 @@ def give_payment(ledger_id: str, data: dict) -> dict:
     else:
         transporter_entry["bill_allocation_type"] = "advance"
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
         "voucher_date": data.get("date") or today_ist(),
@@ -408,4 +418,4 @@ def give_payment(ledger_id: str, data: dict) -> dict:
             transporter_entry,
             {"ledger_id": resolved["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
-    })
+    }, ledger_id, "give", data, voucher_id)

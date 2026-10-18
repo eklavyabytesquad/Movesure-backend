@@ -13,7 +13,7 @@ Transport PF Collection, just reversed.
 from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
-from services.ledger.voucher_service import create_voucher
+from services.ledger.voucher_service import save_party_voucher
 from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
 
 DRIVERS_GROUP_NAME = "Drivers"
@@ -102,8 +102,10 @@ def get_driver_detail(ledger_id: str) -> dict:
     }
 
 
-def add_trip_bhada(ledger_id: str, data: dict) -> dict:
+def add_trip_bhada(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'bhada' entry in place (same body as create).
+
     data = { branch_id, challan_no, truck_number?, amount, date?, narration?, created_by }
     Creates: Dr this branch's 'Truck Bhada Expense' ledger  /  Cr this driver (new bill, ref = challan_no)
     """
@@ -123,7 +125,7 @@ def add_trip_bhada(ledger_id: str, data: dict) -> dict:
         f"Truck Bhada - Challan {challan_no}" + (f" - Truck {truck_number}" if truck_number else "")
     )
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "purchase",
         "voucher_date": data.get("date") or today_ist(),
@@ -136,11 +138,13 @@ def add_trip_bhada(ledger_id: str, data: dict) -> dict:
              "bill_allocation_type": "new_ref",
              "new_bill": {"reference_no": challan_no}},
         ],
-    })
+    }, ledger_id, "bhada", data, voucher_id)
 
 
-def pay_driver(ledger_id: str, data: dict) -> dict:
+def pay_driver(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'pay' entry in place (same body as create).
+
     data = { branch_id, amount, payment_mode: 'cash'|'bank', bank_ledger_id?,
               bill_reference_id? (omit for an on-account payment), date?,
               narration?, created_by }
@@ -165,7 +169,7 @@ def pay_driver(ledger_id: str, data: dict) -> dict:
     else:
         driver_entry["bill_allocation_type"] = "on_account"
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
         "voucher_date": data.get("date") or today_ist(),
@@ -175,4 +179,4 @@ def pay_driver(ledger_id: str, data: dict) -> dict:
             driver_entry,
             {"ledger_id": resolved["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
-    })
+    }, ledger_id, "pay", data, voucher_id)

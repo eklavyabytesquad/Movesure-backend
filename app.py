@@ -143,11 +143,12 @@ from services.ledger.group_service import (
 )
 from services.ledger.ledger_service import (
     list_ledgers, get_ledger, create_ledger, update_ledger, set_ledger_status,
-    get_ledger_balance, get_ledger_statement,
+    get_ledger_balance, get_ledger_statement, merge_ledgers,
 )
-from services.ledger.bill_reference_service import list_bills, get_bill, create_bill
+from services.ledger.bill_reference_service import list_bills, get_bill, create_bill, update_bill
 from services.ledger.voucher_service import (
     list_vouchers, get_voucher, create_voucher, cancel_voucher,
+    update_voucher, post_ledger_entry, prepare_party_edit,
 )
 from services.ledger.audit_log_service import list_audit_log
 from services.ledger.quick_entry_service import (
@@ -3603,7 +3604,7 @@ async def ledger_ledgers_deactivate(request: Request, ledger_id: str = Path(...)
             data = await request.json()
         except Exception:
             pass
-        result = await _run(set_ledger_status, ledger_id, False, data.get("updated_by"))
+        result = await _run(set_ledger_status, ledger_id, False, data.get("updated_by"), bool(data.get("force")))
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -3631,15 +3632,38 @@ async def ledger_ledgers_statement(
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+@app.post("/api/ledger/ledgers/{ledger_id}/entries")
+async def ledger_ledgers_entry(request: Request, ledger_id: str = Path(...)):
+    """Add Entry (Dr/Cr): { side, amount, against_ledger_id, voucher_type?, voucher_date?, narration?, created_by }"""
+    try:
+        result = await _run(post_ledger_entry, ledger_id, await request.json())
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/ledger/ledgers/{ledger_id}/merge")
+async def ledger_ledgers_merge(request: Request, ledger_id: str = Path(...)):
+    """Merge this ledger INTO another: { into_ledger_id, updated_by }"""
+    try:
+        data = await request.json()
+        result = await _run(merge_ledgers, ledger_id, data.get("into_ledger_id"), data.get("updated_by"))
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 # ── Bill References (bill-by-bill) ────────────────────────────
 
 @app.get("/api/ledger/bills")
 async def ledger_bills_list(
-    ledger_id:  str  = Query(...),
-    is_settled: bool = Query(None),
+    ledger_id:    str  = Query(...),
+    is_settled:   bool = Query(None),
+    direction:    str  = Query(None),     # receivable | payable
+    include_void: bool = Query(False),    # bills whose raising voucher was cancelled
 ):
     try:
-        result = await _run(list_bills, ledger_id, is_settled)
+        result = await _run(list_bills, ledger_id, is_settled, direction, include_void)
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -3659,6 +3683,16 @@ async def ledger_bills_create(request: Request):
 async def ledger_bills_get(bill_id: str = Path(...)):
     try:
         result = await _run(get_bill, bill_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/ledger/bills/{bill_id}")
+async def ledger_bills_update(request: Request, bill_id: str = Path(...)):
+    """Body: { reference_no?, due_date?, updated_by } — 409 on a duplicate reference_no in the same ledger."""
+    try:
+        result = await _run(update_bill, bill_id, await request.json())
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -3697,6 +3731,17 @@ async def ledger_vouchers_create(request: Request):
 async def ledger_vouchers_get(voucher_id: str = Path(...)):
     try:
         result = await _run(get_voucher, voucher_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/ledger/vouchers/{voucher_id}")
+async def ledger_vouchers_update(request: Request, voucher_id: str = Path(...)):
+    """Edit a voucher in place (same id + voucher_no), in one transaction.
+    Body: { voucher_date?, narration?, reference_no?, entries?, updated_by, edit_reason? }"""
+    try:
+        result = await _run(update_voucher, voucher_id, await request.json())
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
@@ -3928,6 +3973,50 @@ async def ledger_labour_pay(request: Request, ledger_id: str = Path(...)):
         return _response(result)
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ── Party screen EDITS (same body as the create call) ───────────
+
+async def _party_edit(func, ledger_id: str, voucher_id: str, request: Request):
+    try:
+        data = await _run(prepare_party_edit, voucher_id, await request.json())
+        result = await _run(func, ledger_id, data, voucher_id)
+        return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/ledger/transporters/{ledger_id}/pf-bill/{voucher_id}")
+async def ledger_transporters_pf_bill_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(raise_pf_bill, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/transporters/{ledger_id}/payable-bill/{voucher_id}")
+async def ledger_transporters_payable_bill_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(raise_payable_bill, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/transporters/{ledger_id}/collect/{voucher_id}")
+async def ledger_transporters_collect_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(collect_transporter_payment, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/transporters/{ledger_id}/give/{voucher_id}")
+async def ledger_transporters_give_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(give_transporter_payment, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/drivers/{ledger_id}/bhada/{voucher_id}")
+async def ledger_drivers_bhada_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(add_trip_bhada, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/drivers/{ledger_id}/pay/{voucher_id}")
+async def ledger_drivers_pay_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(pay_driver, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/labour/{ledger_id}/expense/{voucher_id}")
+async def ledger_labour_expense_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(add_labour_expense, ledger_id, voucher_id, request)
+
+@app.put("/api/ledger/labour/{ledger_id}/pay/{voucher_id}")
+async def ledger_labour_pay_edit(request: Request, ledger_id: str = Path(...), voucher_id: str = Path(...)):
+    return await _party_edit(pay_labour, ledger_id, voucher_id, request)
 
 
 # ── Cash Manager (Galla) ─────────────────────────────────────────

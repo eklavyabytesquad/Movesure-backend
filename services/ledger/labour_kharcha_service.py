@@ -13,7 +13,7 @@ off (Dr the labour ledger / Cr Cash-or-Bank).
 from services.supabase_client import get_supabase
 from services.ledger.ledger_service import create_ledger, get_ledger, get_ledger_balance, get_ledger_statement
 from services.ledger.bill_reference_service import list_bills
-from services.ledger.voucher_service import create_voucher
+from services.ledger.voucher_service import save_party_voucher
 from services.ledger.ledger_helpers import resolve_payment_ledger, get_or_create_named_ledger, get_or_create_group, today_ist
 
 LABOUR_GROUP_NAME = "Labour"
@@ -103,8 +103,10 @@ def get_labour_detail(ledger_id: str) -> dict:
 CHARGE_FIELDS = ("unloading", "crossing", "dala_munshiyana", "labour_wage", "other_charge")
 
 
-def add_labour_expense(ledger_id: str, data: dict) -> dict:
+def add_labour_expense(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'expense' entry in place (same body as create).
+
     data = { branch_id, challan_no?, weight?,
               unloading?, crossing?, dala_munshiyana?, labour_wage?, other_charge?
               (each optional, defaults to 0 — fill in whichever apply),
@@ -140,7 +142,7 @@ def add_labour_expense(ledger_id: str, data: dict) -> dict:
     narration = data.get("narration") or (f"Labour Kharcha - Challan {challan_no}" if challan_no else "Labour Kharcha")
     metadata = {"challan_no": challan_no, "weight": weight, **charges}
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "purchase",
         "voucher_date": data.get("date") or today_ist(),
@@ -153,11 +155,13 @@ def add_labour_expense(ledger_id: str, data: dict) -> dict:
              "bill_allocation_type": "new_ref",
              "new_bill": {"reference_no": reference_no, "metadata": metadata}},
         ],
-    })
+    }, ledger_id, "expense", data, voucher_id)
 
 
-def pay_labour(ledger_id: str, data: dict) -> dict:
+def pay_labour(ledger_id: str, data: dict, voucher_id: str | None = None) -> dict:
     """
+    Pass voucher_id to EDIT an existing 'pay' entry in place (same body as create).
+
     data = { branch_id, amount, payment_mode: 'cash'|'bank', bank_ledger_id?,
               bill_reference_id?, date?, narration?, created_by }
     Creates: Dr this labourer (settles their bill)  /  Cr <resolved Cash/Bank>.
@@ -181,7 +185,7 @@ def pay_labour(ledger_id: str, data: dict) -> dict:
     else:
         labour_entry["bill_allocation_type"] = "on_account"
 
-    return create_voucher({
+    return save_party_voucher({
         "branch_id": branch_id,
         "voucher_type": "payment",
         "voucher_date": data.get("date") or today_ist(),
@@ -191,4 +195,4 @@ def pay_labour(ledger_id: str, data: dict) -> dict:
             labour_entry,
             {"ledger_id": resolved["data"]["id"], "entry_type": "cr", "amount": amount},
         ],
-    })
+    }, ledger_id, "pay", data, voucher_id)
