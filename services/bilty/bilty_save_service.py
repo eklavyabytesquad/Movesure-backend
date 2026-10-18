@@ -11,6 +11,7 @@ from services.supabase_client import get_supabase
 from services.thread_pool import shared_pool
 from services.bilty.bilty_notification_service import send_first_booking_notification
 from services.ledger.party_ledger_service import on_bilty_saved
+from services.ledger.transport_ledger_service import sync_transport_bilties
 
 # Shared thread pool for background tasks (rate save, party auto-create)
 # Uses the centralized pool from services.thread_pool
@@ -514,6 +515,10 @@ def save_bilty(data: dict) -> dict:
         # new bilty -> matching auto-add ledger; edited bilty -> ledger follows the new amount.
         # on_bilty_saved never raises.
         shared_pool.submit(on_bilty_saved, "regular", saved_bilty["id"], data.get("staff_id"))
+        # Transport ledgers: an edited bilty follows into its transport ledger
+        # (amount / weight / payment mode -> re-posted; station changed -> unassigned). Never raises.
+        if bilty_id:
+            shared_pool.submit(sync_transport_bilties, [saved_bilty["gr_no"]], data.get("staff_id"))
 
         # === RETURN RESPONSE WITH RESOLVED CITY DATA ===
         # Frontend gets city names back from server for PDF generation.

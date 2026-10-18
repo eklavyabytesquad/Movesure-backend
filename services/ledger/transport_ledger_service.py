@@ -21,8 +21,11 @@ for the same transport; otherwise from that transport's station rate
 A bilty with no kaat is NOT posted unless its ledger has allow_zero_kaat on (our own
 delivery, e.g. SS TRANSPORT CORPORATION in Kanpur) or the request sends allow_zero_kaat.
 
-One ledger per transport GSTIN: all transports rows sharing a GSTIN (one per city)
-are one ledger. Ledgers sit under the Transporters group, so the Transport PF screen's
+One ledger per transport COMPANY: transports rows are grouped by the PAN inside their
+GSTIN (chars 3-12), so SWASTIK TRANSPORT CORPORATION's 36 station rows on 09ABEFS7095Q1Z4
+and its second registration 09ABEFS7095Q2Z3 are ONE ledger. Rows without a GSTIN that
+look like an existing ledger's transport (same name ignoring CORPORATION / CO / PVT …)
+are never given a ledger of their own — they're refused with the ledger to add them to. Ledgers sit under the Transporters group, so the Transport PF screen's
 balance / bills / Collect / Give work on them unchanged — each bilty is a bill there.
 
 Bilties no transport can be found for stay unassigned and are listed with a reason.
@@ -56,6 +59,57 @@ MAN_COLS = ("id, gr_no, created_at, branch_id, city_id, station, consignor, cons
 LINK_COLS = ("id, ledger_id, gr_no, bilty_type, bilty_id, challan_no, bilty_date, station, consignor, consignee, "
              "payment_mode, packages, weight, total, kaat_rate, kaat, dd, pf, kaat_source, transport_id, "
              "voucher_id, bill_reference_id, is_active, added_via, added_by, created_at")
+
+
+_v027: bool | None = None
+
+
+def sync_columns(sb) -> bool:
+    """transport_ledger_bilties.to_city_id / rate_mode / needs_review exist after migration 027."""
+    global _v027
+    if _v027:
+        return True
+    try:
+        sb.table("transport_ledger_bilties").select("to_city_id").limit(1).execute()
+        _v027 = True
+    except Exception:
+        _v027 = False
+    return _v027
+
+
+def _link_cols(sb) -> str:
+    return LINK_COLS + (", to_city_id, rate_mode, needs_review" if sync_columns(sb) else "")
+
+
+def _money(v) -> str:
+    return f"₹{float(v or 0):,.2f}"
+
+
+def narration(b: dict, calc: dict, challan_no: str | None, station: str | None) -> str:
+    """Statement text for one bilty, e.g.
+    'GR 8001 · BASTI · to-pay ₹1,025.00 · kaat ₹504.00 (1.8/kg × 280 kg) · pf ₹521.00 (they owe) · challan 0385'"""
+    rate = calc.get("kaat_rate")
+    if rate and calc.get("rate_mode") == "pkg":
+        basis = f" ({float(rate):g}/pkg × {int(b.get('packages') or 0)} pkg)"
+    elif rate:
+        basis = f" ({float(rate):g}/kg × {float(b.get('weight') or 0):g} kg)"
+    else:
+        basis = ""
+    parts = [f"GR {b['gr_no']}"]
+    if station:
+        parts.append(station)
+    if b["payment_mode"] == "to-pay":
+        parts.append(f"to-pay {_money(b['total'])}")
+    else:
+        parts.append(f"{b['payment_mode']} {_money(b['total'])}")
+    parts.append(f"kaat {_money(calc['kaat'])}{basis}")
+    if calc.get("dd"):
+        parts.append(f"dd {_money(calc['dd'])}")
+    pf = float(calc["pf"])
+    parts.append(f"pf {_money(abs(pf))} ({'they owe' if pf > 0 else 'we owe' if pf < 0 else 'nil'})")
+    if challan_no:
+        parts.append(f"challan {challan_no}")
+    return " · ".join(parts)
 
 
 def _now() -> str:
@@ -95,6 +149,22 @@ def _paged(fn) -> list[dict]:
 def _gst(v) -> str | None:
     v = (v or "").strip().upper()
     return v or None
+
+
+def _pan(gstin) -> str | None:
+    """PAN inside a GSTIN (chars 3-12) — the same company across its state registrations."""
+    g = _gst(gstin)
+    return g[2:12] if g and len(g) >= 12 else g
+
+
+_NAME_NOISE = {"CORPORATION", "CORP", "COMPANY", "CO", "PVT", "PRIVATE", "LTD", "LIMITED", "AND", "THE"}
+
+
+def name_key(name) -> str:
+    """'SWASTIK  TRANSPORT CO.' / 'Swastik Transport Corporation' -> 'SWASTIKTRANSPORT'."""
+    import re
+    words = re.findall(r"[A-Z0-9]+", str(name or "").upper())
+    return "".join(w for w in words if w not in _NAME_NOISE)
 
 
 def _pay(v) -> str:
@@ -213,9 +283,9 @@ class _Ctx:
         if not transport_id:
             return None
         t = self.transports.get(transport_id)
-        g = _gst(t.get("gst_number")) if t else None
+        pan = _pan(t.get("gst_number")) if t else None
         for p in self.profiles:
-            if transport_id in (p.get("transport_ids") or []) or (g and p.get("transport_gstin") == g):
+            if transport_id in (p.get("transport_ids") or []) or (pan and _pan(p.get("transport_gstin")) == pan):
                 return p
         return None
 
@@ -223,8 +293,8 @@ class _Ctx:
         if not transport_id:
             return False
         t = self.transports.get(transport_id)
-        g = _gst(t.get("gst_number")) if t else None
-        return transport_id in (profile.get("transport_ids") or []) or bool(g and g == profile.get("transport_gstin"))
+        pan = _pan(t.get("gst_number")) if t else None
+        return transport_id in (profile.get("transport_ids") or []) or bool(pan and pan == _pan(profile.get("transport_gstin")))
 
     def detect(self, b: dict) -> dict:
         """Suggested delivery transport for a bilty + where the suggestion came from."""
@@ -264,6 +334,7 @@ class _Ctx:
         kaat, rate, source = 0.0, None, "zero"
         same = (profile and self.same_party(k.get("transport_id"), profile)) or \
                (not profile and k.get("transport_id") == transport_id)
+        mode = "kg"
         if float(k.get("kaat") or 0) > 0 and (same or not k.get("transport_id")):
             kaat, rate, source = round(float(k["kaat"]), 2), k.get("actual_kaat_rate"), "kaat_table"
         else:
@@ -274,7 +345,7 @@ class _Ctx:
             if hub:
                 r = hub[0]
                 if r.get("pricing_mode") == "per_pkg":
-                    kaat, rate = float(b["packages"] or 0) * float(r.get("rate_per_pkg") or 0), r.get("rate_per_pkg")
+                    kaat, rate, mode = float(b["packages"] or 0) * float(r.get("rate_per_pkg") or 0), r.get("rate_per_pkg"), "pkg"
                 else:
                     kaat, rate = float(b["weight"] or 0) * float(r.get("rate_per_kg") or 0), r.get("rate_per_kg")
                 kaat = round(max(kaat, float(r.get("min_charge") or 0)), 2)
@@ -285,7 +356,7 @@ class _Ctx:
             pf = round(-(kaat + dd), 2)
         else:
             pf = round(b["total"] - kaat - dd, 2)
-        return {"kaat": kaat, "dd": dd, "pf": pf, "kaat_rate": rate, "kaat_source": source}
+        return {"kaat": kaat, "dd": dd, "pf": pf, "kaat_rate": rate, "kaat_source": source, "rate_mode": mode}
 
 
 def _active_links(sb, grs) -> dict[str, dict]:
@@ -378,7 +449,7 @@ def _rows_for(sb, transit: list[dict]) -> list[dict]:
         row = {k: b[k] for k in ("gr_no", "bilty_type", "bilty_id", "bilty_date", "consignor", "consignee",
                                  "payment_mode", "packages", "weight", "total")}
         row.update({
-            "challan_no": ch_by_gr.get(gr), "station": ctx.station(b),
+            "challan_no": ch_by_gr.get(gr), "station": ctx.station(b), "station_city_id": b.get("to_city_id"),
             "to_pay_amount": b["total"] if b["payment_mode"] == "to-pay" else 0.0,
             "paid_amount": b["total"] if b["payment_mode"] == "paid" else 0.0,
             "suggested": sug, "estimate": calc,
@@ -456,10 +527,11 @@ def create_transport_ledger(data: dict) -> dict:
     if not t:
         return _err("Transport not found", 404)
     t = t[0]
-    gst = _gst(t.get("gst_number"))
+    gst, pan = _gst(t.get("gst_number")), _pan(t.get("gst_number"))
     group = [tid]
-    if gst:
-        group = list({r["id"] for r in (sb.table("transports").select("id").eq("gst_number", t["gst_number"]).execute().data or [])} | {tid})
+    if pan:
+        same = sb.table("transports").select("id, gst_number").ilike("gst_number", f"%{pan}%").execute().data or []
+        group = list({r["id"] for r in same if _pan(r.get("gst_number")) == pan} | {tid})
     try:
         existing = sb.table("transport_ledger_profiles").select("ledger_id, transport_ids, transport_gstin").execute().data or []
     except Exception as exc:
@@ -467,8 +539,16 @@ def create_transport_ledger(data: dict) -> dict:
             return _err("Transport ledgers need migrations/026_transport_bilty_ledgers.sql — run it first", 500)
         raise
     for p in existing:
-        if (gst and p.get("transport_gstin") == gst) or tid in (p.get("transport_ids") or []):
+        if (pan and _pan(p.get("transport_gstin")) == pan) or tid in (p.get("transport_ids") or []):
             return _err("This transport already has a ledger", 409, ledger_id=p["ledger_id"])
+    if not gst:
+        key = name_key(t["transport_name"])
+        full = sb.table("transport_ledger_profiles").select("ledger_id, transport_name").execute().data or []
+        alike = next((p for p in full if key and name_key(p["transport_name"]) == key), None)
+        if alike:
+            return _err(f"'{t['transport_name']}' has no GSTIN and looks like '{alike['transport_name']}' — add it to "
+                        f"that ledger (PUT /transport-ledgers/{{id}} with add_transport_ids) instead of a new one",
+                        409, ledger_id=alike["ledger_id"], looks_like=alike["transport_name"])
 
     if data.get("ledger_id"):
         led = sb.table("ledgers").select("id, name, group_id").eq("id", data["ledger_id"]).execute().data
@@ -535,8 +615,12 @@ def _ledger_stats(sb, ledger_id: str) -> dict:
     }
 
 
-def list_transport_ledgers(branch_id: str | None = None) -> dict:
+def list_transport_ledgers(branch_id: str | None = None, strict_branch: bool = False) -> dict:
+    """Transport ledgers live in the hub's books (KNP-BRANCH), not the viewer's branch — the
+    branch bar must not hide them, so branch_id only filters when strict_branch=true."""
     sb = get_supabase()
+    if not strict_branch:
+        branch_id = None
     profiles = sb.table("transport_ledger_profiles").select("*").execute().data or []
     leds = {l["id"]: l for l in _in(sb, "ledgers", "id, name, branch_id, is_active", "id", [p["ledger_id"] for p in profiles])}
     out = []
@@ -575,7 +659,7 @@ def list_transport_ledger_bilties(ledger_id: str, challan_no=None, payment_mode=
     sb = get_supabase()
 
     def base():
-        x = sb.table("transport_ledger_bilties").select(LINK_COLS).eq("ledger_id", ledger_id).eq("is_active", True)
+        x = sb.table("transport_ledger_bilties").select(_link_cols(sb)).eq("ledger_id", ledger_id).eq("is_active", True)
         if challan_no:
             x = x.eq("challan_no", challan_no)
         if payment_mode:
@@ -643,7 +727,7 @@ def _post(sb, ledger: dict, items: list[tuple[dict, dict, str | None]], added_vi
                             "branch_id": ledger["branch_id"], "voucher_type": "journal",
                             "voucher_no": f"{VOUCHER_PREFIX['journal']}{str(seq + i).zfill(4)}",
                             "voucher_date": b.get("bilty_date") or today_ist(),
-                            "narration": f"Bilty {b['gr_no']} ({b['payment_mode']}) - challan {ch or '-'} - kaat {calc['kaat']:.2f}",
+                            "narration": narration(b, calc, ch, b.get("station")),
                             "reference_no": b["gr_no"],
                             "total_amount": round(sum(l["amount"] for l in lines if l["entry_type"] == "dr"), 2),
                             "created_by": user_id,
@@ -699,6 +783,7 @@ def _post(sb, ledger: dict, items: list[tuple[dict, dict, str | None]], added_vi
                 "kaat_source": calc["kaat_source"], "transport_id": b.get("_transport_id"),
                 "voucher_id": v_by_gr.get(b["gr_no"]), "bill_reference_id": bill_by_gr.get(b["gr_no"]),
                 "added_via": added_via, "added_by": user_id,
+                **({"to_city_id": b.get("to_city_id"), "rate_mode": calc.get("rate_mode")} if sync_columns(sb) else {}),
             } for b, calc, ch in chunk]
             sb.table("transport_ledger_bilties").insert(links).execute()
         except Exception as exc:
@@ -881,81 +966,355 @@ def unassign_bilty(ledger_id: str, link_id: str, user_id: str | None = None, rea
 
 
 def refresh_transport_ledger(ledger_id: str, data: dict) -> dict:
-    """Kaat edited on the kaat screens (or a bilty total changed) after assigning?
-    data = { dry_run? (default true), updated_by } — lists / applies the differences."""
+    """Re-check every bilty in this ledger against its bilty + kaat record (amounts, payment
+    mode, weight, kaat, station, narration). data = { dry_run? (default true), updated_by }"""
     sb = get_supabase()
-    p = sb.table("transport_ledger_profiles").select("*").eq("ledger_id", ledger_id).execute().data
-    if not p:
+    if not sb.table("transport_ledger_profiles").select("ledger_id").eq("ledger_id", ledger_id).execute().data:
         return _err("Transport ledger not found", 404)
-    links = _paged(lambda: sb.table("transport_ledger_bilties").select(LINK_COLS).eq("ledger_id", ledger_id).eq("is_active", True))
-    transit = [{"gr_no": l["gr_no"], "bilty_id": l["bilty_id"] if l["bilty_type"] == "regular" else None,
-                "challan_no": l["challan_no"]} for l in links]
+    grs = [l["gr_no"] for l in _paged(lambda: sb.table("transport_ledger_bilties").select("gr_no")
+                                       .eq("ledger_id", ledger_id).eq("is_active", True))]
+    return sync_transport_bilties(grs, data.get("updated_by"), dry_run=data.get("dry_run", True))
+
+
+def _calc_keep_kaat(b: dict, link: dict) -> dict:
+    """Recompute pf with the kaat already posted (when no kaat can be found any more)."""
+    kaat, dd = float(link["kaat"] or 0), float(link.get("dd") or 0)
+    pf = -kaat if b["payment_mode"] == "paid" else (-(kaat + dd) if b["payment_mode"] == "foc" else b["total"] - kaat - dd)
+    return {"kaat": round(kaat, 2), "dd": round(dd, 2), "pf": round(pf, 2), "kaat_rate": link.get("kaat_rate"),
+            "kaat_source": link.get("kaat_source") or "kaat_table", "rate_mode": link.get("rate_mode") or "kg"}
+
+
+def sync_transport_bilties(gr_nos: list[str], user_id: str | None = None, dry_run: bool = False) -> dict:
+    """Bring assigned bilties in line with their bilty (bilty / station_bilty_summary) and kaat
+    record. Called after a bilty is saved, after any kaat edit, from Refresh, and from
+    POST /transport-ledgers/bilty-changed (manual bilties). Per bilty:
+      deleted, or STATION changed -> unassigned (voucher cancelled) — it shows up in Unassigned again
+      amount / weight / packages / payment mode / kaat / dd changed -> voucher, bill and narration updated
+      can't be applied (a payment is already on it) -> needs_review set, nothing changed
+    Never raises."""
+    try:
+        sb = get_supabase()
+        grs = list(dict.fromkeys(g for g in gr_nos if g))
+        links = _active_links(sb, grs)
+        if not links:
+            return {"status": "skipped", "message": "none of these bilties are in a transport ledger"}
+        full = {r["gr_no"]: r for r in _in(sb, "transport_ledger_bilties", _link_cols(sb), "id",
+                                           [l["id"] for l in links.values()])}
+        transit = [{"gr_no": l["gr_no"], "bilty_id": l["bilty_id"] if l["bilty_type"] == "regular" else None,
+                    "challan_no": l["challan_no"]} for l in full.values()]
+        bilties = _load_bilties(sb, transit)
+        ctx = _Ctx(sb, bilties)
+        profiles = {p["ledger_id"]: p for p in ctx.profiles}
+        has_cols = sync_columns(sb)
+        report = {"unassigned": [], "updated": [], "needs_review": [], "unchanged": 0}
+
+        for gr, link in full.items():
+            b = bilties.get(gr)
+            if not b or b.get("is_deleted"):
+                why = "bilty deleted"
+            else:
+                old_city = link.get("to_city_id")
+                why = None
+                if has_cols and old_city and b.get("to_city_id") and old_city != b["to_city_id"]:
+                    why = f"station changed to {ctx.station(b)}"
+                elif not old_city and link.get("station") and ctx.station(b) and \
+                        link["station"].strip().upper() != ctx.station(b).strip().upper():
+                    why = f"station changed to {ctx.station(b)}"
+            if why:
+                report["unassigned"].append({"gr_no": gr, "reason": why})
+                if not dry_run:
+                    r = unassign_bilty(link["ledger_id"], link["id"], user_id, f"Auto-unassigned: {why}")
+                    if r["status"] != "success":
+                        report["unassigned"].pop()
+                        report["needs_review"].append({"gr_no": gr, "reason": f"{why}, but {r['message']}"})
+                        if has_cols:
+                            sb.table("transport_ledger_bilties").update({"needs_review": f"{why}: {r['message']}"}) \
+                                .eq("id", link["id"]).execute()
+                continue
+
+            b["station"] = ctx.station(b)
+            calc = ctx.kaat_for(b, profiles.get(link["ledger_id"]), link.get("transport_id"))
+            if calc["kaat"] <= 0 < float(link["kaat"] or 0):
+                calc = _calc_keep_kaat(b, link)           # never drop a posted kaat to 0 on its own
+            text = narration(b, calc, link.get("challan_no"), b["station"])
+            v_text = None
+            if link.get("voucher_id"):
+                v = sb.table("vouchers").select("narration").eq("id", link["voucher_id"]).execute().data
+                v_text = v[0]["narration"] if v else None
+            changed = (round(float(link["total"] or 0), 2) != b["total"] or link["payment_mode"] != b["payment_mode"]
+                       or round(float(link["pf"] or 0), 2) != calc["pf"] or round(float(link["kaat"] or 0), 2) != calc["kaat"]
+                       or round(float(link.get("dd") or 0), 2) != calc["dd"] or float(link.get("weight") or 0) != b["weight"])
+            if not changed and v_text == text:
+                report["unchanged"] += 1
+                continue
+            entry = {"gr_no": gr, "old_pf": float(link["pf"] or 0), "new_pf": calc["pf"],
+                     "old_kaat": float(link["kaat"] or 0), "new_kaat": calc["kaat"],
+                     "old_total": float(link["total"] or 0), "new_total": b["total"],
+                     "payment_mode": b["payment_mode"], "narration": text}
+            if dry_run:
+                report["updated"].append(entry)
+                continue
+            res = _apply_change(sb, link, b, calc, text, user_id, ctx)
+            if res["status"] == "success":
+                report["updated"].append(entry)
+            else:
+                report["needs_review"].append({"gr_no": gr, "reason": res["message"]})
+                if has_cols:
+                    sb.table("transport_ledger_bilties").update({"needs_review": res["message"]}).eq("id", link["id"]).execute()
+
+        return {"status": "success", "dry_run": dry_run, "data": report,
+                "message": f"{len(report['updated'])} updated, {len(report['unassigned'])} unassigned, "
+                           f"{len(report['needs_review'])} need review"}
+    except Exception as exc:
+        print(f"transport ledger sync failed for {gr_nos[:5]}: {exc}")
+        return {"status": "error", "message": str(exc)}
+
+
+def _apply_change(sb, link: dict, b: dict, calc: dict, text: str, user_id: str | None, ctx) -> dict:
+    """Edit the bilty's voucher in place; if its transport line has to switch side (e.g. to-pay
+    became paid) the voucher is cancelled and posted again — refused while a payment is on it."""
+    led = sb.table("ledgers").select("id, name, branch_id").eq("id", link["ledger_id"]).execute().data
+    if not led:
+        return _err("ledger not found", 404)
+    user_id = user_id or link.get("added_by")
+    upd = {"total": b["total"], "payment_mode": b["payment_mode"], "packages": b.get("packages"), "weight": b.get("weight"),
+           "consignor": b.get("consignor"), "consignee": b.get("consignee"), "station": b.get("station"),
+           "kaat": calc["kaat"], "dd": calc["dd"], "pf": calc["pf"], "kaat_rate": calc.get("kaat_rate"),
+           "kaat_source": calc["kaat_source"], "updated_at": _now()}
+    if sync_columns(sb):
+        upd.update({"rate_mode": calc.get("rate_mode"), "needs_review": None, "to_city_id": b.get("to_city_id")})
+
+    if link.get("voucher_id"):
+        freight = get_or_create_named_ledger(led[0]["branch_id"], FREIGHT_INCOME_LEDGER_NAME, DIRECT_INCOMES_GROUP_NAME, user_id)
+        kaat = get_or_create_named_ledger(led[0]["branch_id"], KAAT_EXPENSE_LEDGER_NAME, DIRECT_EXPENSES_GROUP_NAME, user_id)
+        lines = _lines(b, calc, link["ledger_id"], freight["data"]["id"], kaat["data"]["id"])
+        if len(lines) >= 2:
+            entries = []
+            for nl in lines:
+                e = {"ledger_id": nl["ledger_id"], "entry_type": nl["entry_type"], "amount": nl["amount"]}
+                if nl["is_party"]:
+                    e.update({"bill_allocation_type": "new_ref", "bill_reference_id": link.get("bill_reference_id")})
+                entries.append(e)
+            res = update_voucher(link["voucher_id"], {"entries": entries, "narration": text,
+                                                      "voucher_date": b.get("bilty_date"), "updated_by": user_id,
+                                                      "edit_reason": f"Bilty {link['gr_no']} changed"}, auto_match=True)
+            if res["status"] == "success":
+                if link.get("bill_reference_id"):
+                    sb.table("ledger_bill_references").update({"metadata": {
+                        "gr_no": b["gr_no"], "challan_no": link.get("challan_no"), "payment_mode": b["payment_mode"],
+                        "total": b["total"], "kaat": calc["kaat"], "dd": calc["dd"], "pf": calc["pf"]}}) \
+                        .eq("id", link["bill_reference_id"]).execute()
+                sb.table("transport_ledger_bilties").update(upd).eq("id", link["id"]).execute()
+                return res
+            if "can't be removed or moved" not in res.get("message", "") and "paid against it" not in res.get("message", ""):
+                return res
+            if "paid against it" in res.get("message", ""):
+                return _err(f"new pf is below what's already paid on GR {link['gr_no']} — adjust the payment first")
+    # side switched (or there was no voucher): cancel + post again
+    if link.get("voucher_id"):
+        c = cancel_voucher(link["voucher_id"], user_id, f"Bilty {link['gr_no']} changed — re-posted")
+        if c["status"] != "success":
+            return c
+    sb.table("transport_ledger_bilties").update({"is_active": False, "removed_at": _now(), "removed_by": user_id,
+                                                 "updated_at": _now()}).eq("id", link["id"]).execute()
+    b["_transport_id"] = link.get("transport_id")
+    res = _post(sb, led[0], [(b, calc, link.get("challan_no"))], link.get("added_via") or "manual", user_id)
+    return res
+
+
+def bilty_changed(data: dict) -> dict:
+    """Call after a MANUAL (station) bilty is edited — regular bilties are synced automatically.
+    data = { gr_no | gr_nos: [...], user_id }"""
+    grs = data.get("gr_nos") or ([data["gr_no"]] if data.get("gr_no") else [])
+    if not grs:
+        return _err("gr_no or gr_nos is required")
+    return sync_transport_bilties(grs, data.get("user_id"))
+
+
+def set_bilty_kaat(data: dict) -> dict:
+    """
+    Add a kaat rate for bilties that have none (from the Hub Challan screen).
+    data = { gr_nos: [...], transport_id (the delivery transport at their station),
+             pricing_mode: 'per_kg'|'per_pkg' (default per_kg), rate,
+             dd? (door delivery kept by the transport, per bilty),
+             save_station_rate? (default true — also saved as that transport's station rate,
+                                 so future bilties to that station get it automatically),
+             assign? (default true — move the bilties into the transport's ledger right after),
+             updated_by }
+    Writes kaat / pf into bilty_wise_kaat (same record the kaat & pohonch screens use).
+    """
+    from services.kaat.kaat_update_service import _sync_pohonch_metadata
+    from services.kaat.kaat_rate_master_service import create_hub_rate
+    sb = get_supabase()
+    grs = list(dict.fromkeys(g for g in (data.get("gr_nos") or []) if g))
+    tid, user_id = data.get("transport_id"), data.get("updated_by")
+    mode = data.get("pricing_mode") or "per_kg"
+    try:
+        rate = float(data.get("rate"))
+    except (TypeError, ValueError):
+        rate = 0
+    if not grs or not tid or not user_id or rate <= 0 or mode not in ("per_kg", "per_pkg"):
+        return _err("gr_nos, transport_id, a positive rate, pricing_mode ('per_kg'/'per_pkg') and updated_by are required")
+    t = sb.table("transports").select("id, transport_name, gst_number, city_id").eq("id", tid).execute().data
+    if not t:
+        return _err("Transport not found", 404)
+    t = t[0]
+    dd = data.get("dd")
+
+    transit = _in(sb, "transit_details", "gr_no, bilty_id, challan_no", "gr_no", grs)
     bilties = _load_bilties(sb, transit)
     ctx = _Ctx(sb, bilties)
-    changes = []
-    for l in links:
-        b = bilties.get(l["gr_no"])
+    ch_by_gr = {x["gr_no"]: x["challan_no"] for x in transit}
+    links = _active_links(sb, grs)
+    done, skipped, stations = [], [], {}
+    for gr in grs:
+        b = bilties.get(gr)
         if not b:
+            skipped.append({"gr_no": gr, "reason": "not on any challan"})
             continue
-        calc = ctx.kaat_for(b, p[0], l.get("transport_id"))
-        if calc["kaat_source"] == "zero" and float(l["kaat"] or 0) > 0:
-            continue                       # never drop a posted kaat to 0 automatically
-        if round(float(l["pf"] or 0), 2) != calc["pf"] or round(float(l["total"] or 0), 2) != b["total"]:
-            changes.append({"link": l, "bilty": b, "calc": calc})
-    report = [{"gr_no": c["link"]["gr_no"], "old_kaat": float(c["link"]["kaat"] or 0), "new_kaat": c["calc"]["kaat"],
-               "old_pf": float(c["link"]["pf"] or 0), "new_pf": c["calc"]["pf"]} for c in changes]
-    if data.get("dry_run", True):
-        return {"status": "success", "dry_run": True, "data": {"changes": report}}
-
-    led = sb.table("ledgers").select("id, branch_id").eq("id", ledger_id).execute().data[0]
-    freight = get_or_create_named_ledger(led["branch_id"], FREIGHT_INCOME_LEDGER_NAME, DIRECT_INCOMES_GROUP_NAME, data.get("updated_by"))
-    kaat = get_or_create_named_ledger(led["branch_id"], KAAT_EXPENSE_LEDGER_NAME, DIRECT_EXPENSES_GROUP_NAME, data.get("updated_by"))
-    done, failed = [], []
-    for c in changes:
-        l, b, calc = c["link"], c["bilty"], c["calc"]
-        if not l.get("voucher_id"):
-            failed.append({"gr_no": l["gr_no"], "reason": "posted without a voucher — unassign and assign again"})
+        if gr in links:
+            skipped.append({"gr_no": gr, "reason": "already in a transport ledger — change its kaat on the kaat screen"})
             continue
-        old = sb.table("voucher_entries").select("id, ledger_id, entry_type, bill_reference_id, bill_allocation_type") \
-            .eq("voucher_id", l["voucher_id"]).execute().data or []
-        new_lines = _lines(b, calc, ledger_id, freight["data"]["id"], kaat["data"]["id"])
-        entries = []
-        for nl in new_lines:
-            e = {"ledger_id": nl["ledger_id"], "entry_type": nl["entry_type"], "amount": nl["amount"]}
-            if nl["is_party"]:
-                e.update({"bill_allocation_type": "new_ref", "bill_reference_id": l.get("bill_reference_id")})
-            entries.append(e)
-        res = update_voucher(l["voucher_id"], {"entries": entries, "updated_by": data.get("updated_by"),
-                                               "edit_reason": f"Kaat/pf refreshed for {l['gr_no']}"}, auto_match=True)
-        if res["status"] != "success":
-            failed.append({"gr_no": l["gr_no"], "reason": res["message"]})
+        if t.get("city_id") and b.get("to_city_id") and t["city_id"] != b["to_city_id"]:
+            skipped.append({"gr_no": gr, "reason": f"this transport row isn't at {ctx.station(b)} — pick that station's transport"})
             continue
-        sb.table("transport_ledger_bilties").update({
-            "total": b["total"], "kaat": calc["kaat"], "dd": calc["dd"], "pf": calc["pf"],
-            "kaat_rate": calc["kaat_rate"], "kaat_source": calc["kaat_source"], "updated_at": _now(),
-        }).eq("id", l["id"]).execute()
-        done.append(l["gr_no"])
-    return {"status": "success", "dry_run": False, "message": f"{len(done)} bilty(s) updated, {len(failed)} failed",
-            "updated": done, "failed": failed}
+        kaat = round((b["packages"] if mode == "per_pkg" else b["weight"]) * rate, 2)
+        k = ctx.kaat.get(gr) or {}
+        dd_val = round(float(dd if dd is not None else (k.get("dd_chrg") or 0)), 2)
+        pf = round(-kaat, 2) if b["payment_mode"] == "paid" else round(b["total"] - kaat - dd_val, 2)
+        payload = {"kaat": kaat, "pf": pf, "actual_kaat_rate": rate if mode == "per_kg" else 0,
+                   "rate_type": mode, "rate_per_kg": rate if mode == "per_kg" else 0,
+                   "rate_per_pkg": rate if mode == "per_pkg" else 0, "transport_id": tid,
+                   "dd_chrg": dd_val, "updated_by": user_id}
+        if k:
+            sb.table("bilty_wise_kaat").update(payload).eq("gr_no", gr).execute()
+        else:
+            sb.table("bilty_wise_kaat").insert({**payload, "gr_no": gr, "challan_no": ch_by_gr.get(gr),
+                                                "destination_city_id": b.get("to_city_id"), "created_by": user_id}).execute()
+        done.append({"gr_no": gr, "kaat": kaat, "pf": pf, "kaat_rate": rate, "kaat_dd": dd_val})
+        if b.get("to_city_id"):
+            stations[b["to_city_id"]] = ctx.station(b)
+    if done:
+        _sync_pohonch_metadata(sb, done)
+
+    saved_rates = []
+    if data.get("save_station_rate", True):
+        for city_id, name in stations.items():
+            r = create_hub_rate(transport_name=t["transport_name"], transport_gstin=t.get("gst_number"),
+                                transport_id=tid, destination_city_id=city_id, pricing_mode=mode,
+                                rate_per_kg=rate if mode == "per_kg" else None,
+                                rate_per_pkg=rate if mode == "per_pkg" else None, created_by=user_id)
+            saved_rates.append({"station": name, "status": r["status"], "message": r.get("message")})
+
+    out = {"status": "success", "message": f"Kaat set on {len(done)} bilty(s)", "kaat_set": done,
+           "skipped": skipped, "station_rates": saved_rates}
+    if done and data.get("assign", True):
+        a = assign_bilties({"items": [{"gr_no": d["gr_no"], "transport_id": tid} for d in done],
+                            "updated_by": user_id, "include_settled": data.get("include_settled", False)})
+        out["assign"] = {k: a.get(k) for k in ("status", "message", "assigned", "skipped")}
+    return out
 
 
-def transport_options(station_city_id: str | None = None, q: str | None = None) -> dict:
-    """Transports for the manual pick dropdown — the station's own first (priority first), each
-    with its ledger if it has one."""
+def transport_options(station_city_id: str | None = None, q: str | None = None, grouped: bool = True,
+                      all_stations: bool = False) -> dict:
+    """Transports for the pick / create dropdown.
+    grouped=true (default): ONE row per company — rows sharing a PAN are merged (all their
+    stations listed); rows without a GSTIN are merged by name and carry `looks_like` when they
+    match a company that has a GSTIN. The station's own / priority companies come first."""
     sb = get_supabase()
     x = sb.table("transports").select("id, transport_name, gst_number, city_id, city_name, is_prior")
-    if station_city_id:
-        x = x.eq("city_id", station_city_id)
     if q:
         x = x.ilike("transport_name", f"%{q.strip()}%")
-    rows = x.limit(100).execute().data or []
+    if station_city_id and not all_stations:
+        x = x.eq("city_id", station_city_id)      # a bilty can only go to a transport at ITS station
+    rows = _paged(lambda: x)
+    if station_city_id and q:
+        pass  # keep all matches; station rows are flagged below
+    # widen each PAN group to ALL its rows (search may only have hit some stations)
+    pans = {_pan(r.get("gst_number")) for r in rows if _pan(r.get("gst_number"))}
+    for pan in pans:
+        for r in sb.table("transports").select("id, transport_name, gst_number, city_id, city_name, is_prior") \
+                .ilike("gst_number", f"%{pan}%").execute().data or []:
+            if _pan(r.get("gst_number")) == pan and r["id"] not in {y["id"] for y in rows}:
+                rows.append(r)
     try:
-        profiles = sb.table("transport_ledger_profiles").select("ledger_id, transport_ids, transport_gstin").execute().data or []
+        profiles = sb.table("transport_ledger_profiles").select("ledger_id, transport_ids, transport_gstin, transport_name").execute().data or []
     except Exception:
         profiles = []
+
+    def ledger_for(ids, pan):
+        return next((p for p in profiles if set(ids) & set(p.get("transport_ids") or [])
+                     or (pan and _pan(p.get("transport_gstin")) == pan)), None)
+
+    if not grouped:
+        for r in rows:
+            p = ledger_for([r["id"]], _pan(r.get("gst_number")))
+            r["ledger_id"] = p["ledger_id"] if p else None
+        rows.sort(key=lambda r: (r.get("city_id") != station_city_id, not r.get("is_prior"), r["transport_name"]))
+        return {"status": "success", "data": rows}
+
+    groups: dict[str, dict] = {}
     for r in rows:
-        g = _gst(r.get("gst_number"))
-        p = next((p for p in profiles if r["id"] in (p.get("transport_ids") or []) or (g and p.get("transport_gstin") == g)), None)
-        r["ledger_id"] = p["ledger_id"] if p else None
-    rows.sort(key=lambda r: (not r.get("is_prior"), r["transport_name"]))
-    return {"status": "success", "data": rows}
+        pan = _pan(r.get("gst_number"))
+        key = f"PAN:{pan}" if pan else f"NAME:{name_key(r['transport_name'])}"
+        g = groups.setdefault(key, {"group_key": key, "names": {}, "gstins": set(), "transport_ids": [],
+                                    "stations": [], "is_prior": False, "at_station": False, "has_gst": bool(pan),
+                                    "primary_transport_id": None})
+        g["names"][r["transport_name"].strip()] = g["names"].get(r["transport_name"].strip(), 0) + 1
+        if r.get("gst_number"):
+            g["gstins"].add(_gst(r["gst_number"]))
+        g["transport_ids"].append(r["id"])
+        g["stations"].append({"transport_id": r["id"], "city_id": r.get("city_id"), "city_name": (r.get("city_name") or "").split("  ")[0].strip(),
+                              "is_prior": bool(r.get("is_prior"))})
+        g["is_prior"] |= bool(r.get("is_prior"))
+        if station_city_id and r.get("city_id") == station_city_id:
+            g["at_station"] = True
+            g["primary_transport_id"] = r["id"]
+    gst_names = {name_key(max(g["names"], key=g["names"].get)): g for g in groups.values() if g["has_gst"]}
+    out = []
+    for g in groups.values():
+        name = max(g["names"], key=g["names"].get)            # most used spelling
+        p = ledger_for(g["transport_ids"], g["group_key"][4:] if g["has_gst"] else None)
+        alike = None if g["has_gst"] else gst_names.get(name_key(name))
+        out.append({
+            "group_key": g["group_key"], "transport_name": name, "other_names": [n for n in g["names"] if n != name],
+            "gstins": sorted(g["gstins"]), "has_gst": g["has_gst"],
+            "transport_id": g["primary_transport_id"] or next((s_["transport_id"] for s_ in g["stations"] if s_["is_prior"]),
+                                                               g["transport_ids"][0]),
+            "transport_ids": g["transport_ids"], "station_count": len(g["stations"]),
+            "stations": sorted(g["stations"], key=lambda s_: s_["city_name"]),
+            "is_prior": g["is_prior"], "at_station": g["at_station"],
+            "ledger_id": p["ledger_id"] if p else None, "ledger_name": p["transport_name"] if p else None,
+            "looks_like": ({"transport_name": max(alike["names"], key=alike["names"].get),
+                            "gstins": sorted(alike["gstins"])} if alike else None),
+        })
+    out.sort(key=lambda g: (not g["at_station"], not g["has_gst"], not g["is_prior"], -g["station_count"], g["transport_name"]))
+    return {"status": "success", "data": out}
+
+
+def merge_transport_ledgers(source_ledger_id: str, data: dict) -> dict:
+    """Fold one transport ledger into another (e.g. a stray no-GSTIN 'swastic transport' into
+    SWASTIK TRANSPORT CORPORATION): its bilties, vouchers, bills and transports move over and
+    the source ledger is deactivated. data = { into_ledger_id, updated_by }"""
+    from services.ledger.ledger_service import merge_ledgers
+    sb = get_supabase()
+    into = data.get("into_ledger_id")
+    if not into or into == source_ledger_id:
+        return _err("into_ledger_id (a different transport ledger) is required")
+    profs = {p["ledger_id"]: p for p in sb.table("transport_ledger_profiles").select("*")
+             .in_("ledger_id", [source_ledger_id, into]).execute().data or []}
+    if source_ledger_id not in profs or into not in profs:
+        return _err("Both must be transport ledgers", 404)
+    res = merge_ledgers(source_ledger_id, into, data.get("updated_by"))
+    if res["status"] != "success":
+        return res
+    sb.table("transport_ledger_bilties").update({"ledger_id": into, "updated_at": _now()}) \
+        .eq("ledger_id", source_ledger_id).execute()
+    ids = list(set(profs[into].get("transport_ids") or []) | set(profs[source_ledger_id].get("transport_ids") or []))
+    sb.table("transport_ledger_profiles").update({"transport_ids": ids, "updated_by": data.get("updated_by"),
+                                                  "updated_at": _now()}).eq("ledger_id", into).execute()
+    sb.table("transport_ledger_profiles").delete().eq("ledger_id", source_ledger_id).execute()
+    out = get_transport_ledger(into)
+    if out["status"] == "success":
+        out["message"] = res["message"]
+    return out

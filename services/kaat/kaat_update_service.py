@@ -48,6 +48,15 @@ def _sync_pohonch_metadata(sb, updates: list[dict]) -> int:
     if not updates:
         return 0
 
+    # Every kaat edit (single, bulk by GR list, bulk by station, apply station rate) ends here —
+    # keep transport ledgers in step with the new kaat / pf (background, never blocks or fails this)
+    try:
+        from services.thread_pool import shared_pool
+        from services.ledger.transport_ledger_service import sync_transport_bilties
+        shared_pool.submit(sync_transport_bilties, [u["gr_no"] for u in updates if u.get("gr_no")])
+    except Exception as exc:
+        print(f"transport ledger sync not scheduled: {exc}")
+
     # Build a lookup: gr_no → updated values
     update_map: dict[str, dict] = {}
     for u in updates:

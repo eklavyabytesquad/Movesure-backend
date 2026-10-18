@@ -171,7 +171,7 @@ from services.ledger.transport_ledger_service import (
     list_received_challans, get_challan_bilties, list_unassigned, transport_options,
     create_transport_ledger, update_transport_ledger, list_transport_ledgers, get_transport_ledger,
     list_transport_ledger_bilties, assign_bilties, auto_assign_challan, unassign_bilty,
-    refresh_transport_ledger,
+    refresh_transport_ledger, merge_transport_ledgers, set_bilty_kaat, bilty_changed,
 )
 from services.ledger.party_ledger_service import (
     create_party_ledger, update_party_profile, list_party_ledgers, get_party_ledger,
@@ -4099,9 +4099,10 @@ async def party_ledgers_collect_edit(request: Request, ledger_id: str = Path(...
 # ── Transport ledgers (per bilty, from challans received at the hub) ──
 
 @app.get("/api/ledger/transport-ledgers")
-async def transport_ledgers_list(branch_id: str = Query(None)):
-    """Transport ledgers (one per GSTIN) with balance, bilty count, to-pay / kaat / pf totals."""
-    return await _pl(list_transport_ledgers, branch_id)
+async def transport_ledgers_list(branch_id: str = Query(None), strict_branch: bool = Query(False)):
+    """Transport ledgers (one per company) with balance, bilty count, to-pay / kaat / pf totals.
+    They live in the hub's books, so branch_id is ignored unless strict_branch=true."""
+    return await _pl(list_transport_ledgers, branch_id, strict_branch)
 
 
 @app.post("/api/ledger/transport-ledgers")
@@ -4138,9 +4139,24 @@ async def transport_ledgers_unassigned(from_date: str = Query(None), to_date: st
 
 
 @app.get("/api/ledger/transport-ledgers/transport-options")
-async def transport_ledgers_options(station_city_id: str = Query(None), q: str = Query(None)):
-    """Transports for the manual pick dropdown (station's own first, priority first)."""
-    return await _pl(transport_options, station_city_id, q)
+async def transport_ledgers_options(station_city_id: str = Query(None), q: str = Query(None), grouped: bool = Query(True),
+                                     all_stations: bool = Query(False)):
+    """Transport companies for the pick dropdown. With station_city_id (the bilty's station) only
+    transports AT that station are returned; all_stations=true lifts that."""
+    return await _pl(transport_options, station_city_id, q, grouped, all_stations)
+
+
+@app.post("/api/ledger/transport-ledgers/kaat")
+async def transport_ledgers_set_kaat(request: Request):
+    """Add a kaat rate for bilties that have none:
+    { gr_nos, transport_id, pricing_mode?, rate, dd?, save_station_rate?, assign?, updated_by }"""
+    return await _pl(set_bilty_kaat, await request.json())
+
+
+@app.post("/api/ledger/transport-ledgers/bilty-changed")
+async def transport_ledgers_bilty_changed(request: Request):
+    """Call after editing a MANUAL (station) bilty: { gr_no | gr_nos, user_id } — regular bilties sync on save."""
+    return await _pl(bilty_changed, await request.json())
 
 
 @app.post("/api/ledger/transport-ledgers/assign")
@@ -4171,6 +4187,12 @@ async def transport_ledgers_bilties(ledger_id: str = Path(...), challan_no: str 
 async def transport_ledgers_unassign(ledger_id: str = Path(...), link_id: str = Path(...),
                                      user_id: str = Query(None), reason: str = Query(None)):
     return await _pl(unassign_bilty, ledger_id, link_id, user_id, reason)
+
+
+@app.post("/api/ledger/transport-ledgers/{ledger_id}/merge")
+async def transport_ledgers_merge(request: Request, ledger_id: str = Path(...)):
+    """Fold this transport ledger INTO another: { into_ledger_id, updated_by }"""
+    return await _pl(merge_transport_ledgers, ledger_id, await request.json())
 
 
 @app.post("/api/ledger/transport-ledgers/{ledger_id}/refresh")
