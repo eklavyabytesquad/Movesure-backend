@@ -30,12 +30,12 @@ balance / bills / Collect / Give work on them unchanged — each bilty is a bill
 
 Bilties no transport can be found for stay unassigned and are listed with a reason.
 
-Guards against counting the same money twice — such bilties are flagged and skipped
-unless the request says include_settled:
-  - already settled through a pohonch / crossing challan (bilty_wise_kaat.pohonch_no /
-    crossing_challan_no) — about 64% of received bilties today
-  - to-pay bilty already owed by its consignee in a party ledger (always blocked)
-  - GR already booked as Kanpur Delivery income (always blocked)
+A pohonch no / crossing challan no / bilty number on the kaat record is only PROOF that
+the transport received the bilty — it is shown on the row (`proof`) and never blocks it.
+
+Guards against counting the same money twice (always blocked):
+  - to-pay bilty already owed by its consignee in a party ledger
+  - GR already booked as Kanpur Delivery income
 """
 from datetime import date, timedelta
 from datetime import datetime, timezone
@@ -226,7 +226,7 @@ class _Ctx:
         self.sb = sb
         grs = list(bilties)
         self.kaat = {r["gr_no"]: r for r in _in(sb, "bilty_wise_kaat",
-                     "gr_no, transport_id, kaat, pf, dd_chrg, actual_kaat_rate, challan_no, pohonch_no, crossing_challan_no",
+                     "gr_no, transport_id, kaat, pf, dd_chrg, actual_kaat_rate, challan_no, pohonch_no, crossing_challan_no, bilty_number",
                      "gr_no", grs)}
         # station codes -> city ids (manual bilties sometimes only carry the code)
         codes = {b["station_code"] for b in bilties.values() if b.get("station_code") and not b.get("to_city_id")}
@@ -266,14 +266,13 @@ class _Ctx:
         self.profiles = profiles
         self.ledger_names = {l["id"]: l["name"] for l in _in(sb, "ledgers", "id, name", "id", [p["ledger_id"] for p in profiles])}
 
-    def settled_via(self, gr_no: str) -> str | None:
-        """Already settled with the transport through the pohonch / crossing-challan system."""
+    def proof(self, gr_no: str) -> dict | None:
+        """Proof the transport received the bilty (pohonch / crossing challan / their bilty no).
+        Information only — it does NOT mean the money is settled, and never blocks assigning."""
         k = self.kaat.get(gr_no) or {}
-        if k.get("pohonch_no"):
-            return f"pohonch {k['pohonch_no']}"
-        if k.get("crossing_challan_no"):
-            return f"crossing challan {k['crossing_challan_no']}"
-        return None
+        p = {"pohonch_no": k.get("pohonch_no"), "crossing_challan_no": k.get("crossing_challan_no"),
+             "bilty_number": k.get("bilty_number")}
+        return p if any(p.values()) else None
 
     def station(self, b: dict) -> str | None:
         c = self.cities.get(b.get("to_city_id"))
@@ -458,7 +457,7 @@ def _rows_for(sb, transit: list[dict]) -> list[dict]:
                           "pf": link["pf"]} if link else None),
             "blocked": (f"to-pay bilty already owed by the consignee in '{holds[gr]}'" if gr in holds
                         else "already booked as Kanpur Delivery income" if gr in delivery else None),
-            "already_settled_via": ctx.settled_via(gr),
+            "proof": ctx.proof(gr),
         })
         out.append(row)
     out.sort(key=lambda r: (r.get("challan_no") or "", r["gr_no"]))
@@ -486,10 +485,10 @@ def get_challan_bilties(challan_no: str) -> dict:
 
 
 def list_unassigned(from_date=None, to_date=None, branch_id=None, only_undetected: bool = False,
-                    include_settled: bool = False) -> dict:
+                    include_settled: bool = True) -> dict:
     """Bilties on received challans that are in NO transport ledger, each with its suggestion
     (or the reason none was found). only_undetected=true -> just the ones with no transport at all.
-    Pohonch / crossing-challan settled bilties are left out unless include_settled=true.
+    (include_settled is kept for old callers and ignored — pohonch numbers are only proof.)
     Defaults to the last 30 days (by challan date) — the full history is ~18k bilties."""
     sb = get_supabase()
     if not from_date and not to_date:
@@ -499,15 +498,12 @@ def list_unassigned(from_date=None, to_date=None, branch_id=None, only_undetecte
     links = _active_links(sb, [t["gr_no"] for t in transit])
     transit = [t for t in transit if t["gr_no"] not in links]
     rows = _rows_for(sb, transit)
-    settled_count = sum(1 for r in rows if r["already_settled_via"])
-    if not include_settled:
-        rows = [r for r in rows if not r["already_settled_via"]]
     if only_undetected:
         rows = [r for r in rows if not r["suggested"].get("transport_id")]
     return {"status": "success", "data": {
         "rows": rows, "count": len(rows), "from_date": from_date, "to_date": to_date,
         "undetected_count": sum(1 for r in rows if not r["suggested"].get("transport_id")),
-        "settled_elsewhere_count": settled_count,
+        "with_proof_count": sum(1 for r in rows if r["proof"]),
     }}
 
 
@@ -813,7 +809,6 @@ def assign_bilties(data: dict) -> dict:
     if not items or not user_id:
         return _err("items: [{gr_no, ledger_id?|transport_id?}] and updated_by are required")
     allow_zero = bool(data.get("allow_zero_kaat"))
-    include_settled = bool(data.get("include_settled"))
     create_missing = data.get("create_missing_ledgers", True)
     transit = _in(sb, "transit_details", "gr_no, bilty_id, challan_no, to_branch_id", "gr_no", [i["gr_no"] for i in items])
     t_by_gr = {t["gr_no"]: t for t in transit}
@@ -849,11 +844,6 @@ def assign_bilties(data: dict) -> dict:
             continue
         if gr in delivery:
             skipped.append({"gr_no": gr, "reason": "already booked as Kanpur Delivery income"})
-            continue
-        via = ctx.settled_via(gr)
-        if via and not include_settled:
-            skipped.append({"gr_no": gr, "reason": f"already settled with the transport via {via} — "
-                                                   f"send include_settled to post it anyway"})
             continue
         profile, tid = None, it.get("transport_id")
         if it.get("ledger_id"):
@@ -932,8 +922,7 @@ def auto_assign_challan(challan_no: str, data: dict) -> dict:
     plan = [{"gr_no": r["gr_no"], "transport_id": r["suggested"].get("transport_id"),
              "transport_name": r["suggested"].get("transport_name"), "source": r["suggested"].get("source"),
              "ledger_name": r["suggested"].get("ledger_name"), "kaat": r["estimate"]["kaat"], "pf": r["estimate"]["pf"],
-             "blocked": r["blocked"] or (None if data.get("include_settled") or not r["already_settled_via"]
-                                         else f"already settled via {r['already_settled_via']}"),
+             "blocked": r["blocked"], "proof": r["proof"],
              "zero_ok": bool(data.get("allow_zero_kaat")) or r["suggested"].get("ledger_id") in zero_ok} for r in rows]
     if data.get("dry_run", True):
         return {"status": "success", "dry_run": True, "data": {
@@ -1210,7 +1199,7 @@ def set_bilty_kaat(data: dict) -> dict:
            "skipped": skipped, "station_rates": saved_rates}
     if done and data.get("assign", True):
         a = assign_bilties({"items": [{"gr_no": d["gr_no"], "transport_id": tid} for d in done],
-                            "updated_by": user_id, "include_settled": data.get("include_settled", False)})
+                            "updated_by": user_id})
         out["assign"] = {k: a.get(k) for k in ("status", "message", "assigned", "skipped")}
     return out
 

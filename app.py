@@ -4133,7 +4133,7 @@ async def transport_ledgers_auto_assign(request: Request, challan_no: str = Path
 @app.get("/api/ledger/transport-ledgers/unassigned")
 async def transport_ledgers_unassigned(from_date: str = Query(None), to_date: str = Query(None),
                                        branch_id: str = Query(None), only_undetected: bool = Query(False),
-                                       include_settled: bool = Query(False)):
+                                       include_settled: bool = Query(True)):
     """Received bilties in no transport ledger (with suggestion or the reason none was found). Default: last 30 days."""
     return await _pl(list_unassigned, from_date, to_date, branch_id, only_undetected, include_settled)
 
