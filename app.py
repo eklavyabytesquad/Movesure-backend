@@ -34,6 +34,9 @@ from auth.auth_service import get_jwt_token, load_jwt_token
 from services.ewaybill.ewaybill_service import get_ewaybill_details
 from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
 from services.consignor.consignor_bilty_service import get_consignor_bilties
+from services.consignor.public_tracking_service import (
+    get_public_consignor_bilties, raise_complaint, list_public_complaints, list_complaints, update_complaint,
+)
 from services.catalog.station_catalog_service import generate_station_catalog_pdf, SAMPLE_CONSIGNOR as CATALOG_SAMPLE_CONSIGNOR
 from services.catalog.custom_station_list_service import generate_custom_station_list_pdf, available_states as station_list_states
 from services.catalog.rate_list_service import generate_rate_list_pdf, SAMPLE_CONSIGNOR
@@ -373,6 +376,8 @@ async def ensure_valid_token(request: Request, call_next):
             or path.startswith("/api/bilty")
             or path.startswith("/api/station-bilty")
             or path.startswith("/api/catalog")
+            or path.startswith("/api/consignor")
+            or path.startswith("/api/complaints")
             or path.startswith("/api/challan")
             or path.startswith("/api/truck-trips")
             or path.startswith("/api/staff")
@@ -496,6 +501,28 @@ async def get_rate_list_pdf(consignor_name: str = Query(SAMPLE_CONSIGNOR)):
 @app.get("/api/consignor/bilties")
 async def get_consignor_bilties_endpoint(
     consignor_gst: str = Query(...),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    page: int = Query(1),
+    page_size: int = Query(20),
+    gr_no: str = Query(None),
+):
+    """
+    PUBLIC tracking (/tracking/<gstin>): the consignor's bilties with only customer-facing
+    details — route, packages, freight, invoice, e-way bill validity, tracking status,
+    vehicle, bilty PDF and complaints. No kaat / pf / charges / pohonch / driver data.
+    """
+    try:
+        result = await _run(get_public_consignor_bilties, consignor_gst, from_date, to_date, page, page_size, gr_no)
+        return _response(result)
+    except Exception as e:
+        log.exception("Error in get_consignor_bilties_endpoint: %s", e)
+        return JSONResponse(content={"status": "error", "message": "Something went wrong, please try again"}, status_code=500)
+
+
+@app.get("/api/consignor/bilties/360")
+async def get_consignor_bilties_360_endpoint(
+    consignor_gst: str = Query(...),
     consignor_name: str = Query(None),
     from_date: str = Query(None),
     to_date: str = Query(None),
@@ -503,16 +530,55 @@ async def get_consignor_bilties_endpoint(
     page_size: int = Query(50),
 ):
     """
-    Every bilty for a consignor, looked up by GSTIN alone, with dispatch
-    status, e-way bill validity, Part-B (transporter update) history,
-    truck/driver, and bilty-wise-kaat (pohonch/crossing) details.
+    STAFF view: every bilty for a consignor with dispatch status, e-way bill validity,
+    Part-B history, truck/driver, and bilty-wise-kaat (kaat / pf / pohonch / crossing).
+    Not for the public tracking page.
     """
     try:
         result = await _run(get_consignor_bilties, consignor_gst, consignor_name, from_date, to_date, page, page_size)
         return _response(result)
     except Exception as e:
-        log.exception("Error in get_consignor_bilties_endpoint: %s", e)
+        log.exception("Error in get_consignor_bilties_360_endpoint: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/consignor/complaints")
+async def consignor_raise_complaint(request: Request):
+    """PUBLIC: { consignor_gst, gr_no, category, message, name?, phone } -> ticket number."""
+    try:
+        return _response(await _run(raise_complaint, await request.json()))
+    except Exception as e:
+        log.exception("Error in consignor_raise_complaint: %s", e)
+        return JSONResponse(content={"status": "error", "message": "Could not register the complaint, please try again"}, status_code=500)
+
+
+@app.get("/api/consignor/complaints")
+async def consignor_list_complaints(consignor_gst: str = Query(...), gr_no: str = Query(None)):
+    """PUBLIC: this consignor's complaints with status and the office's reply."""
+    try:
+        return _response(await _run(list_public_complaints, consignor_gst, gr_no))
+    except Exception as e:
+        log.exception("Error in consignor_list_complaints: %s", e)
+        return JSONResponse(content={"status": "error", "message": "Something went wrong, please try again"}, status_code=500)
+
+
+@app.get("/api/complaints")
+async def staff_list_complaints(status: str = Query(None), q: str = Query(None),
+                                page: int = Query(1), page_size: int = Query(50)):
+    """STAFF: all complaints (status=open,in_progress …; q = GR / ticket / GSTIN / phone)."""
+    try:
+        return _response(await _run(list_complaints, status, q, page, page_size))
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.put("/api/complaints/{complaint_id}")
+async def staff_update_complaint(request: Request, complaint_id: str = Path(...)):
+    """STAFF: { status?, public_reply?, internal_note?, assigned_to?, updated_by }"""
+    try:
+        return _response(await _run(update_complaint, complaint_id, await request.json()))
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/api/ewaybill/challan-bulk")
