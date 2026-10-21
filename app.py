@@ -1,6 +1,7 @@
 """
 FastAPI Backend for E-Way Bill Management & Bilty Operations
 """
+import re
 import logging
 import sys
 import time
@@ -34,6 +35,7 @@ from services.ewaybill.ewaybill_service import get_ewaybill_details
 from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
 from services.consignor.consignor_bilty_service import get_consignor_bilties
 from services.catalog.station_catalog_service import generate_station_catalog_pdf, SAMPLE_CONSIGNOR as CATALOG_SAMPLE_CONSIGNOR
+from services.catalog.custom_station_list_service import generate_custom_station_list_pdf, available_states as station_list_states
 from services.catalog.rate_list_service import generate_rate_list_pdf, SAMPLE_CONSIGNOR
 from services.catalog.tracking_card_service import generate_tracking_card_pdf, SAMPLE_GSTIN, SAMPLE_CONSIGNOR as TRACKING_SAMPLE_CONSIGNOR
 from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
@@ -370,6 +372,7 @@ async def ensure_valid_token(request: Request, call_next):
     if (path in SKIP_AUTH_PATHS
             or path.startswith("/api/bilty")
             or path.startswith("/api/station-bilty")
+            or path.startswith("/api/catalog")
             or path.startswith("/api/challan")
             or path.startswith("/api/truck-trips")
             or path.startswith("/api/staff")
@@ -415,6 +418,34 @@ async def get_ewaybill(eway_bill_number: str = Query(None), gstin: str = Query(N
     except Exception as e:
         log.exception("Error in get_ewaybill: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/catalog/station-list/options")
+async def station_list_options():
+    """Default states + major cities, and every state with its city count (for the picker)."""
+    try:
+        return _response(await _run(station_list_states))
+    except Exception as e:
+        log.exception("Error in station_list_options: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/catalog/station-list")
+async def station_list_pdf(request: Request):
+    """Branded station list PDF.
+    Body: { company_name, logo (pasted image as data URL / base64), states?, major_cities?, title?, show_watermark? }
+    Returns application/pdf."""
+    try:
+        data = await request.json()
+        pdf = await _run(generate_custom_station_list_pdf, data or {})
+        name = re.sub(r"[^A-Za-z0-9]+", "_", (data.get("company_name") or "station_list")).strip("_").lower()
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="station_list_{name}.pdf"'})
+    except ValueError as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=400)
+    except Exception as e:
+        log.exception("Error in station_list_pdf: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/api/catalog/station-catalog")

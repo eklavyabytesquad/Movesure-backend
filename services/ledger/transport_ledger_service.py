@@ -409,6 +409,30 @@ def _delivery_holds(sb, grs: list[str]) -> set[str]:
     return {v["reference_no"] for v in vs if v["id"] in hit}
 
 
+_MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST",
+           "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"]
+
+
+def _manual_bill_months(sb, ledger_id: str) -> dict[tuple[int, int], str]:
+    """{(year, month): bill reference} for the hand-made monthly PF bills on a Transporters
+    ledger (Transport PF screen — bills not raised from a bilty). Bilties dated in those
+    months are already counted by that bill, so they must not be posted again."""
+    out = {}
+    for b in sb.table("ledger_bill_references").select("reference_no, reference_date, metadata, source_table")             .eq("ledger_id", ledger_id).execute().data or []:
+        if b.get("source_table"):
+            continue                                  # a per-bilty bill, not a manual monthly one
+        meta = b.get("metadata") or {}
+        try:
+            if meta.get("bill_month") and meta.get("bill_year"):
+                key = (int(meta["bill_year"]), _MONTHS.index(str(meta["bill_month"]).strip().upper()) + 1)
+            else:
+                key = (int(b["reference_date"][:4]), int(b["reference_date"][5:7]))
+        except (ValueError, TypeError, KeyError):
+            continue
+        out[key] = b["reference_no"]
+    return out
+
+
 # ── Received challans + their bilties ────────────────────────────────────────
 def list_received_challans(from_date=None, to_date=None, branch_id=None, page: int = 1, page_size: int = 30) -> dict:
     """Challans received at the hub, newest first, with how many bilties are in a transport ledger."""
@@ -546,24 +570,31 @@ def create_transport_ledger(data: dict) -> dict:
                         f"that ledger (PUT /transport-ledgers/{{id}} with add_transport_ids) instead of a new one",
                         409, ledger_id=alike["ledger_id"], looks_like=alike["transport_name"])
 
+    name = (data.get("name") or t["transport_name"]).strip()
+    linked = {p["ledger_id"] for p in existing}
+    if not data.get("ledger_id"):
+        clash = [l for l in (sb.table("ledgers").select("id, name").eq("branch_id", branch_id)
+                             .eq("group_id", _transporters_group_id()).eq("is_active", True).execute().data or [])
+                 if l["name"].strip().lower() == name.lower()]
+        if clash and clash[0]["id"] in linked:
+            return _err(f"Ledger '{clash[0]['name']}' already belongs to another transport — send a different name", 409,
+                        existing_ledger_id=clash[0]["id"])
+        if clash:
+            # The same transport's ledger made by hand on the Transport PF screen: attach to it so its
+            # history stays in one place. Bilties dated in a month its manual PF bills cover are skipped
+            # at assign time (see _manual_bill_months), so nothing is counted twice.
+            data = {**data, "ledger_id": clash[0]["id"]}
+
     if data.get("ledger_id"):
         led = sb.table("ledgers").select("id, name, group_id").eq("id", data["ledger_id"]).execute().data
         if not led:
             return _err("ledger_id not found", 404)
         if led[0]["group_id"] != _transporters_group_id():
             return _err("ledger_id must be a ledger under the Transporters group")
+        if led[0]["id"] in linked:
+            return _err("That ledger already belongs to another transport", 409, existing_ledger_id=led[0]["id"])
         ledger_id = led[0]["id"]
     else:
-        name = (data.get("name") or t["transport_name"]).strip()
-        clash = [l for l in (sb.table("ledgers").select("id, name").eq("branch_id", branch_id)
-                             .eq("group_id", _transporters_group_id()).eq("is_active", True).execute().data or [])
-                 if l["name"].strip().lower() == name.lower()]
-        if clash:
-            n_bills = len(sb.table("ledger_bill_references").select("id").eq("ledger_id", clash[0]["id"]).execute().data or [])
-            return _err(f"A Transporters ledger '{clash[0]['name']}' already exists in this branch ({n_bills} bill(s) on it). "
-                        f"Send ledger_id to attach it — careful: its manual PF bills and per-bilty entries would then "
-                        f"both count — or send a different name.", 409,
-                        existing_ledger_id=clash[0]["id"], existing_bill_count=n_bills)
         created = create_transporter({"branch_id": branch_id, "name": name, "gstin": gst, "phone": t.get("mob_number"),
                                       "address": t.get("address"), "created_by": created_by})
         if created["status"] != "success":
@@ -800,6 +831,7 @@ def assign_bilties(data: dict) -> dict:
     Move bilties into transport ledgers.
     data = { items: [{gr_no, ledger_id? | transport_id?}]   (neither = use the auto-detected transport),
              allow_zero_kaat? (default false), create_missing_ledgers? (default true),
+             ignore_manual_bill_months? (default false — post even in a month a manual PF bill covers),
              branch_id? (hub branch for new ledgers; default the challan's destination branch),
              updated_by }
     """
@@ -822,6 +854,7 @@ def assign_bilties(data: dict) -> dict:
 
     plan: dict[str, list] = {}
     differs = []
+    covered_cache: dict[str, dict] = {}
     skipped = []
     new_ledgers = {}
     for it in items:
@@ -876,6 +909,15 @@ def assign_bilties(data: dict) -> dict:
                 ctx.profiles.append(profile)
                 for x in profile.get("transport_ids") or []:
                     new_ledgers[x] = profile
+        lid = profile["ledger_id"]
+        if lid not in covered_cache:
+            covered_cache[lid] = _manual_bill_months(sb, lid)
+        d = b.get("bilty_date") or ""
+        month_key = (int(d[:4]), int(d[5:7])) if len(d) >= 7 and d[:4].isdigit() else None
+        if month_key in covered_cache[lid] and not data.get("ignore_manual_bill_months"):
+            skipped.append({"gr_no": gr, "reason": f"{_MONTHS[month_key[1] - 1].title()} {month_key[0]} is already billed "
+                                                   f"on this ledger by the manual bill '{covered_cache[lid][month_key]}'"})
+            continue
         calc = ctx.kaat_for(b, profile, tid)
         if calc["kaat"] <= 0 and not (allow_zero or profile.get("allow_zero_kaat")):
             skipped.append({"gr_no": gr, "reason": "no kaat for this transport at this station — add a station rate, "
