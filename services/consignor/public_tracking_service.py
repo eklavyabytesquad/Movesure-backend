@@ -11,8 +11,9 @@ charges, pohonch / crossing numbers, driver & owner names and mobiles, Part-B up
 history / error messages, the delivery transport's GSTIN, staff notes.
 The full internal view is consignor_bilty_service.get_consignor_bilties (the /360 route).
 
-Complaints: a customer can raise one on a bilty of THEIR GSTIN (checked server-side),
-see its status and the office's public reply.
+Complaints: a customer can raise one on a bilty of THEIR GSTIN (checked server-side); it goes
+into the existing `complaints` table (the office's complaint screen) and the customer sees
+its status and the office's resolution notes.
 """
 import re
 from datetime import datetime, timezone
@@ -80,12 +81,12 @@ def get_public_consignor_bilties(consignor_gst: str, from_date: str | None = Non
                 .ilike("consignor_gst", gst).execute().data or []:
             extra[b["gr_no"]] = b
     complaints = {}
-    try:
-        for c in sb.table("bilty_complaints").select("gr_no, ticket_no, status, created_at") \
-                .ilike("consignor_gst", gst).in_("gr_no", grs or ["-"]).order("created_at", desc=True).execute().data or []:
-            complaints.setdefault(c["gr_no"], []).append(c)
-    except Exception:
-        pass                                            # migration 028 not run yet
+    if grs:
+        for c in sb.table("complaints").select("gr_no, complaint_no, status, created_at") \
+                .in_("gr_no", grs).like("complaint_no", f"{CUST_PREFIX}%").order("created_at", desc=True).execute().data or []:
+            complaints.setdefault(c["gr_no"], []).append({"ticket_no": c["complaint_no"], "status": c["status"],
+                                                           "status_label": STATUS_LABELS.get(c["status"], c["status"]),
+                                                           "created_at": c["created_at"]})
 
     out = []
     for r in rows:
@@ -119,7 +120,7 @@ def get_public_consignor_bilties(consignor_gst: str, from_date: str | None = Non
             },
             "delivery_partner": x.get("transport_name"),     # name only — for the consignee to collect from
             "bilty_pdf_url": x.get("pdf_bucket"),
-            "complaints": {"count": len(cl), "open": sum(1 for c in cl if c["status"] in ("open", "in_progress")),
+            "complaints": {"count": len(cl), "open": sum(1 for c in cl if c["status"] not in DONE_STATUSES),
                            "latest": cl[0] if cl else None},
         })
     return {"status": "success", "data": {
@@ -130,13 +131,30 @@ def get_public_consignor_bilties(consignor_gst: str, from_date: str | None = Non
     }}
 
 
-# ── Complaints (public) ───────────────────────────────────────────────────────
-def _ticket_no(sb) -> str:
-    prefix = f"CMP-{datetime.now(timezone.utc):%y%m}-"
-    last = sb.table("bilty_complaints").select("ticket_no").like("ticket_no", f"{prefix}%") \
-        .order("ticket_no", desc=True).limit(1).execute().data
-    n = int(last[0]["ticket_no"].rsplit("-", 1)[1]) + 1 if last else 1
-    return f"{prefix}{n:04d}"
+# ── Complaints (existing `complaints` table — the office's complaint screen) ───
+# Customer complaints are stored exactly like the office's own:
+#   complaint_no   CUST-<GR>-<epoch ms>   (office ones are TRACK-<GR>-<epoch ms>)
+#   complaint_type DELAY / DAMAGE / SHORT_DELIVERY / … (the category, upper-case)
+#   status         INVESTIGATING (the office then moves it on as usual)
+#   complaint_description "[Customer: <name>, <phone> · tracking page] <message>"
+#   created_by     the user who booked the bilty (the table needs a user; the public has none)
+# resolution_notes is what the customer sees as the office's reply.
+CUST_PREFIX = "CUST-"
+STATUS_LABELS = {"INVESTIGATING": "Under investigation", "IN_TRANSIT": "In transit", "DELIVERED": "Delivered",
+                 "RESOLVED": "Resolved", "CLOSED": "Closed"}
+DONE_STATUSES = {"RESOLVED", "CLOSED", "DELIVERED"}
+URGENT = {"damage", "not_received", "short_delivery"}
+
+
+def _public_complaint(c: dict) -> dict:
+    desc = c.get("complaint_description") or ""
+    msg = desc.split("] ", 1)[1] if desc.startswith("[Customer") and "] " in desc else desc
+    code = (c.get("complaint_type") or "").lower()
+    return {"ticket_no": c["complaint_no"], "gr_no": c["gr_no"], "category": code,
+            "category_label": CATEGORIES.get(code, c.get("complaint_type")), "message": msg,
+            "status": c["status"], "status_label": STATUS_LABELS.get(c["status"], c["status"]),
+            "reply": c.get("resolution_notes"), "created_at": c["created_at"], "updated_at": c.get("updated_at"),
+            "resolved_at": c.get("resolved_at") or c.get("closed_at")}
 
 
 def raise_complaint(data: dict) -> dict:
@@ -146,7 +164,7 @@ def raise_complaint(data: dict) -> dict:
     cat = (data.get("category") or "").strip().lower()
     msg = (data.get("message") or "").strip()
     phone = re.sub(r"\D", "", str(data.get("phone") or ""))[-10:]
-    name = (data.get("name") or "").strip()[:100] or None
+    name = (data.get("name") or "").strip()[:100]
     if not _GSTIN.match(gst) or not gr:
         return _err("consignor_gst and gr_no are required")
     if cat not in CATEGORIES:
@@ -159,88 +177,52 @@ def raise_complaint(data: dict) -> dict:
         return _err("A valid 10-digit mobile number is required so we can call you back")
 
     sb = get_supabase()
-    b = sb.table("bilty").select("id, gr_no").eq("gr_no", gr).ilike("consignor_gst", gst).eq("is_active", True) \
-        .limit(1).execute().data
+    b = sb.table("bilty").select("id, gr_no, staff_id, to_city_id").eq("gr_no", gr).ilike("consignor_gst", gst) \
+        .eq("is_active", True).limit(1).execute().data
     if not b:
         return _err("This GR number isn't one of your bilties", 404)
-    try:
-        open_now = sb.table("bilty_complaints").select("id", count="exact").eq("gr_no", gr) \
-            .in_("status", ["open", "in_progress"]).execute().count or 0
-    except Exception as exc:
-        if "does not exist" in str(exc):
-            return _err("Complaints aren't enabled yet (migrations/028_bilty_complaints.sql)", 503)
-        raise
-    if open_now >= MAX_OPEN_PER_GR:
+    b = b[0]
+    mine = sb.table("complaints").select("status").eq("gr_no", gr).like("complaint_no", f"{CUST_PREFIX}%").execute().data or []
+    if sum(1 for c in mine if c["status"] not in DONE_STATUSES) >= MAX_OPEN_PER_GR:
         return _err("This bilty already has open complaints — our team will contact you", 429)
 
-    for attempt in range(3):
-        row = {"ticket_no": _ticket_no(sb), "gr_no": gr, "bilty_id": b[0]["id"], "consignor_gst": gst,
-               "category": cat, "message": msg, "raised_by_name": name, "raised_by_phone": phone}
-        try:
-            ins = sb.table("bilty_complaints").insert(row).execute().data[0]
-            break
-        except Exception as exc:
-            if "bilty_complaints_ticket_unique" in str(exc) and attempt < 2:
-                continue
-            raise
-    return {"status": "success", "message": f"Complaint registered. Your ticket number is {ins['ticket_no']}",
+    # same delivery-progress fields the office's TRACK- complaints carry
+    t = (sb.table("transit_details").select("challan_no, is_out_of_delivery_from_branch1, is_delivered_at_branch2, "
+                                            "is_out_of_delivery_from_branch2, is_delivered_at_destination")
+         .eq("gr_no", gr).limit(1).execute().data or [{}])[0]
+    city = (sb.table("cities").select("city_name").eq("id", b["to_city_id"]).execute().data or [{}])[0] \
+        if b.get("to_city_id") else {}
+    who = ", ".join(x for x in (name, phone) if x)
+    row = {
+        "complaint_no": f"{CUST_PREFIX}{gr}-{int(datetime.now(timezone.utc).timestamp() * 1000)}",
+        "gr_no": gr, "bilty_id": b["id"], "complaint_type": cat.upper(),
+        "complaint_description": f"[Customer: {who} · tracking page] {msg}",
+        "priority": "URGENT" if cat in URGENT else "MEDIUM", "status": "INVESTIGATING",
+        "destination_city": city.get("city_name"), "challan_no": t.get("challan_no"),
+        "is_out_for_delivery": bool(t.get("is_out_of_delivery_from_branch1")),
+        "is_at_hub": bool(t.get("is_delivered_at_branch2")),
+        "is_out_for_delivery_from_hub": bool(t.get("is_out_of_delivery_from_branch2")),
+        "is_delivered_at_destination": bool(t.get("is_delivered_at_destination")),
+        "created_by": b["staff_id"],
+    }
+    ins = sb.table("complaints").insert(row).execute().data[0]
+    return {"status": "success", "message": f"Complaint registered. Your ticket number is {ins['complaint_no']}",
             "data": _public_complaint(ins)}
 
 
-def _public_complaint(c: dict) -> dict:
-    return {"ticket_no": c["ticket_no"], "gr_no": c["gr_no"], "category": c["category"],
-            "category_label": CATEGORIES.get(c["category"]), "message": c["message"], "status": c["status"],
-            "reply": c.get("public_reply"), "created_at": c["created_at"], "updated_at": c.get("updated_at"),
-            "resolved_at": c.get("resolved_at")}
-
-
 def list_public_complaints(consignor_gst: str, gr_no: str | None = None) -> dict:
+    """The consignor's own (customer-raised) complaints. Office-internal TRACK- rows aren't shown."""
     gst = (consignor_gst or "").strip().upper()
     if not _GSTIN.match(gst):
         return _err("A valid consignor GSTIN is required")
-    q = get_supabase().table("bilty_complaints").select("*").ilike("consignor_gst", gst).order("created_at", desc=True)
+    sb = get_supabase()
+    q = sb.table("complaints").select("*").like("complaint_no", f"{CUST_PREFIX}%").order("created_at", desc=True)
     if gr_no:
         q = q.eq("gr_no", gr_no.strip().upper())
-    try:
-        rows = q.limit(100).execute().data or []
-    except Exception as exc:
-        if "does not exist" in str(exc):
-            return {"status": "success", "data": []}
-        raise
-    return {"status": "success", "data": [_public_complaint(c) for c in rows]}
-
-
-# ── Complaints (staff) ────────────────────────────────────────────────────────
-def list_complaints(status: str | None = None, q: str | None = None, page: int = 1, page_size: int = 50) -> dict:
-    sb = get_supabase()
-    x = sb.table("bilty_complaints").select("*", count="exact").order("created_at", desc=True)
-    if status:
-        x = x.in_("status", [s.strip() for s in status.split(",")])
-    if q:
-        term = re.sub(r"[,()%*\\]", " ", q).strip()
-        if term:
-            x = x.or_(f"gr_no.ilike.%{term}%,ticket_no.ilike.%{term}%,consignor_gst.ilike.%{term}%,raised_by_phone.ilike.%{term}%")
-    page, page_size = max(1, page), min(max(1, page_size), 200)
-    res = x.range((page - 1) * page_size, page * page_size - 1).execute()
-    return {"status": "success", "data": {"rows": res.data or [], "total": res.count or 0, "page": page, "page_size": page_size}}
-
-
-def update_complaint(complaint_id: str, data: dict) -> dict:
-    """data = { status?, public_reply?, internal_note?, assigned_to?, updated_by }"""
-    sb = get_supabase()
-    if not sb.table("bilty_complaints").select("id").eq("id", complaint_id).execute().data:
-        return _err("Complaint not found", 404)
-    payload = {}
-    if "status" in data:
-        if data["status"] not in ("open", "in_progress", "resolved", "closed"):
-            return _err("status must be open, in_progress, resolved or closed")
-        payload["status"] = data["status"]
-        payload["resolved_at"] = _now() if data["status"] in ("resolved", "closed") else None
-    for f in ("public_reply", "internal_note", "assigned_to"):
-        if f in data:
-            payload[f] = data[f] or None
-    if not payload:
-        return _err("Nothing to update")
-    payload.update({"updated_by": data.get("updated_by"), "updated_at": _now()})
-    sb.table("bilty_complaints").update(payload).eq("id", complaint_id).execute()
-    return {"status": "success", "data": sb.table("bilty_complaints").select("*").eq("id", complaint_id).execute().data[0]}
+    rows = q.limit(500).execute().data or []
+    ids = list({r["bilty_id"] for r in rows if r.get("bilty_id")})
+    own = set()
+    for i in range(0, len(ids), 200):
+        own |= {x["id"] for x in sb.table("bilty").select("id").in_("id", ids[i:i + 200]).ilike("consignor_gst", gst)
+                .execute().data or []}
+    return {"status": "success", "data": [_public_complaint(c) for c in rows if c.get("bilty_id") in own][:100]}

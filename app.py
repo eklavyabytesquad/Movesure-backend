@@ -35,7 +35,7 @@ from services.ewaybill.ewaybill_service import get_ewaybill_details
 from services.ewaybill.bulk_ewaybill_service import get_challan_ewaybills_bulk
 from services.consignor.consignor_bilty_service import get_consignor_bilties
 from services.consignor.public_tracking_service import (
-    get_public_consignor_bilties, raise_complaint, list_public_complaints, list_complaints, update_complaint,
+    get_public_consignor_bilties, raise_complaint, list_public_complaints,
 )
 from services.catalog.station_catalog_service import generate_station_catalog_pdf, SAMPLE_CONSIGNOR as CATALOG_SAMPLE_CONSIGNOR
 from services.catalog.custom_station_list_service import generate_custom_station_list_pdf, available_states as station_list_states
@@ -377,7 +377,6 @@ async def ensure_valid_token(request: Request, call_next):
             or path.startswith("/api/station-bilty")
             or path.startswith("/api/catalog")
             or path.startswith("/api/consignor")
-            or path.startswith("/api/complaints")
             or path.startswith("/api/challan")
             or path.startswith("/api/truck-trips")
             or path.startswith("/api/staff")
@@ -560,25 +559,6 @@ async def consignor_list_complaints(consignor_gst: str = Query(...), gr_no: str 
     except Exception as e:
         log.exception("Error in consignor_list_complaints: %s", e)
         return JSONResponse(content={"status": "error", "message": "Something went wrong, please try again"}, status_code=500)
-
-
-@app.get("/api/complaints")
-async def staff_list_complaints(status: str = Query(None), q: str = Query(None),
-                                page: int = Query(1), page_size: int = Query(50)):
-    """STAFF: all complaints (status=open,in_progress …; q = GR / ticket / GSTIN / phone)."""
-    try:
-        return _response(await _run(list_complaints, status, q, page, page_size))
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.put("/api/complaints/{complaint_id}")
-async def staff_update_complaint(request: Request, complaint_id: str = Path(...)):
-    """STAFF: { status?, public_reply?, internal_note?, assigned_to?, updated_by }"""
-    try:
-        return _response(await _run(update_complaint, complaint_id, await request.json()))
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/api/ewaybill/challan-bulk")

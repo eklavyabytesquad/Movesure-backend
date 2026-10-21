@@ -1,7 +1,7 @@
 -- WARNING: This schema is for context only and is not meant to be run.
 -- Table order and constraints may not be valid for execution.
 
-000000CREATE TABLE public.users (
+CREATE TABLE public.users (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   username character varying NOT NULL UNIQUE,
   password_hash text NOT NULL,
@@ -61,18 +61,6 @@ CREATE TABLE public.branches (
   CONSTRAINT branches_default_challan_book_id_fkey FOREIGN KEY (default_challan_book_id) REFERENCES public.challan_books(id),
   CONSTRAINT branches_default_bill_book_id_fkey FOREIGN KEY (default_bill_book_id) REFERENCES public.bill_books(id)
 );
-CREATE TABLE public.print_templates (
-  code character varying(50) NOT NULL CHECK (code::text ~ '^[a-z0-9_-]+$'::text),
-  name character varying(100) NOT NULL,
-  description text,
-  doc_type character varying(30) NOT NULL DEFAULT 'bilty'::character varying,
-  preview_url text,
-  sort_order integer NOT NULL DEFAULT 0,
-  is_active boolean NOT NULL DEFAULT true,
-  created_at timestamp with time zone NOT NULL DEFAULT now(),
-  updated_at timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT print_templates_pkey PRIMARY KEY (code)
-);
 CREATE TABLE public.bill_books (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   created_by uuid NOT NULL,
@@ -91,11 +79,11 @@ CREATE TABLE public.bill_books (
   created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
   company_id uuid,
-  print_template character varying(50) NOT NULL DEFAULT 'template1'::character varying,
+  print_template character varying NOT NULL DEFAULT 'template1'::character varying,
   CONSTRAINT bill_books_pkey PRIMARY KEY (id),
   CONSTRAINT bill_books_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
   CONSTRAINT bill_books_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id),
-  CONSTRAINT bill_books_print_template_fkey FOREIGN KEY (print_template) REFERENCES public.print_templates(code) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT bill_books_print_template_fkey FOREIGN KEY (print_template) REFERENCES public.print_templates(code)
 );
 CREATE TABLE public.cities (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -187,8 +175,10 @@ CREATE TABLE public.permanent_details (
   transport_address text,
   website character varying,
   company_id uuid,
+  print_template character varying NOT NULL DEFAULT 'template1'::character varying,
   CONSTRAINT permanent_details_pkey PRIMARY KEY (id),
   CONSTRAINT permanent_details_branch_id_fkey FOREIGN KEY (branch_id) REFERENCES public.branches(id),
+  CONSTRAINT permanent_details_print_template_fkey FOREIGN KEY (print_template) REFERENCES public.print_templates(code),
   CONSTRAINT permanent_details_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
 );
 CREATE TABLE public.bilty (
@@ -247,7 +237,8 @@ CREATE TABLE public.bilty (
   company_id uuid,
   bill_book_id uuid,
   CONSTRAINT bilty_pkey PRIMARY KEY (id),
-  CONSTRAINT bilty_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id)
+  CONSTRAINT bilty_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id),
+  CONSTRAINT bilty_bill_book_id_fkey FOREIGN KEY (bill_book_id) REFERENCES public.bill_books(id)
 );
 CREATE TABLE public.content_management (
   content_id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -386,17 +377,6 @@ CREATE TABLE public.challan_details (
   CONSTRAINT challan_details_truck_trip_id_fkey FOREIGN KEY (truck_trip_id) REFERENCES public.truck_trips(id),
   CONSTRAINT challan_details_challan_book_id_fkey FOREIGN KEY (challan_book_id) REFERENCES public.challan_books(id)
 );
-CREATE TABLE public.bilty_groups (
-  id uuid NOT NULL DEFAULT uuid_generate_v4(),
-  name character varying(100) NOT NULL CHECK (btrim(name::text) <> ''::text),
-  description text,
-  is_active boolean NOT NULL DEFAULT true,
-  created_by uuid,
-  updated_by uuid,
-  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT bilty_groups_pkey PRIMARY KEY (id)
-);
 CREATE TABLE public.station_bilty_summary (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   station character varying NOT NULL,
@@ -430,10 +410,10 @@ CREATE TABLE public.station_bilty_summary (
   short_packages_count integer NOT NULL DEFAULT 0,
   is_advance_bilty boolean NOT NULL DEFAULT false,
   small_bilties jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(small_bilties) = 'array'::text),
-  group_ref character varying(100),
+  group_ref character varying,
   group_id uuid,
   CONSTRAINT station_bilty_summary_pkey PRIMARY KEY (id),
-  CONSTRAINT station_bilty_summary_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.bilty_groups(id) ON DELETE SET NULL
+  CONSTRAINT station_bilty_summary_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.bilty_groups(id)
 );
 CREATE TABLE public.monthly_bill (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -707,6 +687,7 @@ CREATE TABLE public.transport_hub_rates (
   ewb_chrg numeric,
   other_chrg numeric,
   labour_chrg numeric,
+  transport_gstin character varying,
   CONSTRAINT transport_hub_rates_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.bilty_wise_kaat (
@@ -1210,6 +1191,7 @@ CREATE TABLE public.crossing_bill (
   created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
   is_active boolean NOT NULL DEFAULT true,
+  crossing_challan_url text,
   CONSTRAINT crossing_bill_pkey PRIMARY KEY (id),
   CONSTRAINT crossing_bill_transport_id_fkey FOREIGN KEY (transport_id) REFERENCES public.transport_admin(transport_id),
   CONSTRAINT crossing_bill_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
@@ -1648,13 +1630,59 @@ CREATE TABLE public.companies (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT companies_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.bilty_crossing_bill (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  bill_no character varying NOT NULL UNIQUE,
+  transport_name character varying NOT NULL,
+  transport_gstin character varying,
+  bill_month integer NOT NULL CHECK (bill_month >= 1 AND bill_month <= 12),
+  bill_year integer NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '[]'::jsonb,
+  total_bilties integer NOT NULL DEFAULT 0,
+  total_kaat numeric NOT NULL DEFAULT 0,
+  total_pf numeric NOT NULL DEFAULT 0,
+  total_amount numeric NOT NULL DEFAULT 0,
+  pdf_url text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  total_paid_kaat numeric NOT NULL DEFAULT 0,
+  CONSTRAINT bilty_crossing_bill_pkey PRIMARY KEY (id),
+  CONSTRAINT bilty_crossing_bill_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT bilty_crossing_bill_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.bilty_groups (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  name character varying NOT NULL CHECK (btrim(name::text) <> ''::text),
+  description text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT bilty_groups_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.print_templates (
+  code character varying NOT NULL CHECK (code::text ~ '^[a-z0-9_-]+$'::text),
+  name character varying NOT NULL,
+  description text,
+  doc_type character varying NOT NULL DEFAULT 'bilty'::character varying,
+  preview_url text,
+  sort_order integer NOT NULL DEFAULT 0,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT print_templates_pkey PRIMARY KEY (code)
+);
 CREATE TABLE public.party_ledger_profiles (
   ledger_id uuid NOT NULL,
-  kind character varying(10) NOT NULL CHECK (kind::text = ANY (ARRAY['party'::character varying, 'custom'::character varying]::text[])),
-  party_type character varying(10) CHECK (party_type::text = ANY (ARRAY['consignor'::character varying, 'consignee'::character varying]::text[])),
+  kind character varying NOT NULL CHECK (kind::text = ANY (ARRAY['party'::character varying, 'custom'::character varying]::text[])),
+  party_type character varying CHECK (party_type::text = ANY (ARRAY['consignor'::character varying, 'consignee'::character varying]::text[])),
   party_id uuid,
   party_name character varying NOT NULL,
-  match_names text[] NOT NULL DEFAULT '{}'::text[],
+  match_names ARRAY NOT NULL DEFAULT '{}'::text[],
   gstin character varying,
   auto_add boolean NOT NULL DEFAULT true,
   own_branch_only boolean NOT NULL DEFAULT false,
@@ -1663,12 +1691,12 @@ CREATE TABLE public.party_ledger_profiles (
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT party_ledger_profiles_pkey PRIMARY KEY (ledger_id),
-  CONSTRAINT party_ledger_profiles_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT party_ledger_profiles_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id)
 );
 CREATE TABLE public.ledger_bilties (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   ledger_id uuid NOT NULL,
-  bilty_type character varying(10) NOT NULL CHECK (bilty_type::text = ANY (ARRAY['regular'::character varying, 'manual'::character varying]::text[])),
+  bilty_type character varying NOT NULL CHECK (bilty_type::text = ANY (ARRAY['regular'::character varying, 'manual'::character varying]::text[])),
   bilty_id uuid NOT NULL,
   gr_no character varying NOT NULL,
   bilty_date date,
@@ -1678,22 +1706,25 @@ CREATE TABLE public.ledger_bilties (
   amount numeric NOT NULL DEFAULT 0,
   voucher_id uuid,
   bill_reference_id uuid,
-  added_via character varying(10) NOT NULL DEFAULT 'manual'::character varying,
+  added_via character varying NOT NULL DEFAULT 'manual'::character varying CHECK (added_via::text = ANY (ARRAY['manual'::character varying, 'import'::character varying, 'sync'::character varying, 'auto'::character varying]::text[])),
   is_active boolean NOT NULL DEFAULT true,
   added_by uuid,
   removed_by uuid,
   removed_at timestamp with time zone,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  amount_source character varying NOT NULL DEFAULT 'bilty'::character varying CHECK (amount_source::text = ANY (ARRAY['bilty'::character varying, 'manual'::character varying]::text[])),
+  billed_at timestamp with time zone,
+  billed_by uuid,
   CONSTRAINT ledger_bilties_pkey PRIMARY KEY (id),
-  CONSTRAINT ledger_bilties_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CONSTRAINT ledger_bilties_voucher_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CONSTRAINT ledger_bilties_bill_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT ledger_bilties_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id),
+  CONSTRAINT ledger_bilties_voucher_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id),
+  CONSTRAINT ledger_bilties_bill_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id)
 );
 CREATE TABLE public.transport_ledger_profiles (
   ledger_id uuid NOT NULL,
   transport_gstin character varying,
-  transport_ids uuid[] NOT NULL DEFAULT '{}'::uuid[],
+  transport_ids ARRAY NOT NULL DEFAULT '{}'::uuid[],
   primary_transport_id uuid,
   transport_name character varying NOT NULL,
   allow_zero_kaat boolean NOT NULL DEFAULT false,
@@ -1702,13 +1733,13 @@ CREATE TABLE public.transport_ledger_profiles (
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT transport_ledger_profiles_pkey PRIMARY KEY (ledger_id),
-  CONSTRAINT transport_ledger_profiles_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT transport_ledger_profiles_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id)
 );
 CREATE TABLE public.transport_ledger_bilties (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   ledger_id uuid NOT NULL,
   gr_no character varying NOT NULL,
-  bilty_type character varying(10) NOT NULL CHECK (bilty_type::text = ANY (ARRAY['regular'::character varying, 'manual'::character varying]::text[])),
+  bilty_type character varying NOT NULL CHECK (bilty_type::text = ANY (ARRAY['regular'::character varying, 'manual'::character varying]::text[])),
   bilty_id uuid,
   challan_no character varying,
   bilty_date date,
@@ -1723,19 +1754,22 @@ CREATE TABLE public.transport_ledger_bilties (
   kaat numeric NOT NULL DEFAULT 0,
   dd numeric NOT NULL DEFAULT 0,
   pf numeric NOT NULL DEFAULT 0,
-  kaat_source character varying(12),
+  kaat_source character varying,
   transport_id uuid,
   voucher_id uuid,
   bill_reference_id uuid,
   is_active boolean NOT NULL DEFAULT true,
-  added_via character varying(10) NOT NULL DEFAULT 'manual'::character varying,
+  added_via character varying NOT NULL DEFAULT 'manual'::character varying CHECK (added_via::text = ANY (ARRAY['manual'::character varying, 'auto'::character varying]::text[])),
   added_by uuid,
   removed_by uuid,
   removed_at timestamp with time zone,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  to_city_id uuid,
+  rate_mode character varying,
+  needs_review text,
   CONSTRAINT transport_ledger_bilties_pkey PRIMARY KEY (id),
-  CONSTRAINT transport_ledger_bilties_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CONSTRAINT transport_ledger_bilties_voucher_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CONSTRAINT transport_ledger_bilties_bill_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT transport_ledger_bilties_ledger_fkey FOREIGN KEY (ledger_id) REFERENCES public.ledgers(id),
+  CONSTRAINT transport_ledger_bilties_voucher_fkey FOREIGN KEY (voucher_id) REFERENCES public.vouchers(id),
+  CONSTRAINT transport_ledger_bilties_bill_fkey FOREIGN KEY (bill_reference_id) REFERENCES public.ledger_bill_references(id)
 );
