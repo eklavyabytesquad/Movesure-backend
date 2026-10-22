@@ -766,9 +766,11 @@ async def generate_delivery_challan_endpoint(request: Request):
 
 
 @app.post("/api/bilty/whatsapp/{gr_no}")
-async def bilty_send_whatsapp(request: Request, gr_no: str = Path(...)):
+async def bilty_send_whatsapp(request: Request, gr_no: str = Path(...), wait: bool = Query(False)):
     """Send the 'first booking' WhatsApp for a saved bilty, built server-side (no 422s).
-    Body (optional): { "numbers": ["98xxxxxxxx", ...] } to send to specific numbers instead."""
+    Body (optional): { "numbers": ["98xxxxxxxx", ...] } to send to specific numbers instead.
+    Default: answers at once and sends in the background — the provider takes 2-5 s per call
+    and the print modal must not wait for it. ?wait=true waits and returns the provider result."""
     try:
         data = {}
         try:
@@ -776,7 +778,17 @@ async def bilty_send_whatsapp(request: Request, gr_no: str = Path(...)):
         except Exception:
             pass
         from services.bilty.bilty_notification_service import send_booking_message_for_gr
-        return _response(await _run(send_booking_message_for_gr, gr_no, (data or {}).get("numbers")))
+        from services.thread_pool import shared_pool
+        numbers = (data or {}).get("numbers")
+        if not wait:
+            def _bg():
+                res = send_booking_message_for_gr(gr_no, numbers)
+                if res.get("status") != "success":
+                    log.warning("WhatsApp resend for %s failed: %s", gr_no, res.get("message"))
+            shared_pool.submit(_bg)
+            return JSONResponse(content={"status": "success", "queued": True, "gr_no": gr_no,
+                                         "message": "WhatsApp is being sent in the background"}, status_code=202)
+        return _response(await _run(send_booking_message_for_gr, gr_no, numbers))
     except Exception as e:
         log.exception("Error in bilty_send_whatsapp: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
