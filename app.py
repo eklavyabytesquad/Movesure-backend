@@ -765,6 +765,23 @@ async def generate_delivery_challan_endpoint(request: Request):
 # ============================================================
 
 
+@app.post("/api/bilty/whatsapp/{gr_no}")
+async def bilty_send_whatsapp(request: Request, gr_no: str = Path(...)):
+    """Send the 'first booking' WhatsApp for a saved bilty, built server-side (no 422s).
+    Body (optional): { "numbers": ["98xxxxxxxx", ...] } to send to specific numbers instead."""
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        from services.bilty.bilty_notification_service import send_booking_message_for_gr
+        return _response(await _run(send_booking_message_for_gr, gr_no, (data or {}).get("numbers")))
+    except Exception as e:
+        log.exception("Error in bilty_send_whatsapp: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.get("/api/bilty/reference-data")
 async def bilty_reference_data(branch_id: str = Query(None), user_id: str = Query(None)):
     try:

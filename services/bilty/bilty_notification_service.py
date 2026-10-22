@@ -92,3 +92,56 @@ def send_first_booking_notification(bilty_row: dict, from_city: dict | None, to_
                 "response": resp.text[:300]}
     except Exception as e:
         return {"status": "error", "message": f"Failed to send first-booking notification: {e}"}
+
+
+def send_booking_message_for_gr(gr_no: str, numbers: list | None = None) -> dict:
+    """
+    For the frontend: send the 'first booking' WhatsApp for a saved bilty by GR number.
+    The message is built server-side from the bilty itself, so it can never hit the
+    template's 422s (empty / null / numeric values, missing keys, bad receiver).
+    numbers (optional): send to these 10-digit mobiles instead of the bilty's own
+    consignor / consignee numbers — e.g. a number typed on the screen.
+    Returns which receivers were used and which numbers were skipped as invalid.
+    """
+    from services.supabase_client import get_supabase
+    gr = (gr_no or "").strip().upper()
+    if not gr:
+        return {"status": "error", "message": "gr_no is required", "status_code": 400}
+    sb = get_supabase()
+    rows = sb.table("bilty").select("gr_no, bilty_date, consignor_name, consignee_name, consignor_number, "
+                                    "consignee_number, no_of_pkg, from_city_id, to_city_id") \
+        .eq("gr_no", gr).eq("is_active", True).limit(1).execute().data
+    if not rows:
+        return {"status": "error", "message": f"Bilty {gr} not found", "status_code": 404}
+    b = rows[0]
+    ids = [i for i in (b.get("from_city_id"), b.get("to_city_id")) if i]
+    cities = {c["id"]: c for c in (sb.table("cities").select("id, city_name").in_("id", ids).execute().data or [])} if ids else {}
+    skipped = []
+    if numbers:
+        raw = list(numbers)
+        b = {**b, "consignor_number": None, "consignee_number": None}
+        valid = [m for m in (_normalize_mobile(n) for n in raw) if m]
+        skipped = [n for n in raw if not _normalize_mobile(n)]
+        if not valid:
+            return {"status": "error", "message": "None of the numbers is a valid 10-digit mobile", "skipped": skipped,
+                    "status_code": 400}
+        # send to each given number (reuse the two receiver slots, then the rest one by one)
+        results = []
+        for m in valid:
+            results.append(send_first_booking_notification({**b, "consignor_number": m}, cities.get(b.get("from_city_id")),
+                                                           cities.get(b.get("to_city_id"))))
+        ok = [r for r in results if r["status"] == "success"]
+        return {"status": "success" if ok else "error", "gr_no": gr,
+                "message": f"Sent to {len(ok)} of {len(valid)} number(s)", "receivers": valid, "skipped": skipped,
+                "errors": [r["message"] for r in results if r["status"] != "success"],
+                **({} if ok else {"status_code": 502})}
+    for label, n in (("consignor", b.get("consignor_number")), ("consignee", b.get("consignee_number"))):
+        if not _normalize_mobile(n):
+            skipped.append({"party": label, "number": n, "reason": "missing" if not n else "not a valid 10-digit mobile"})
+    res = send_first_booking_notification(b, cities.get(b.get("from_city_id")), cities.get(b.get("to_city_id")))
+    res.update({"gr_no": gr, "skipped": skipped})
+    if res["status"] == "skipped":
+        res.update({"status": "error", "status_code": 400})
+    elif res["status"] == "error":
+        res["status_code"] = 502
+    return res
