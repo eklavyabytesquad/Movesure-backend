@@ -49,15 +49,23 @@ def send_first_booking_notification(bilty_row: dict, from_city: dict | None, to_
     consignee_name, consignor_number, consignee_number, no_of_pkg).
     from_city / to_city: {city_name, ...} dicts already resolved by save_bilty(), or None.
     """
+    # The template rejects an EMPTY value with 422 "Invalid values for keys: N" — so a 0
+    # package count must go as "0" (not ""), and any other missing field as "-".
+    pkg = bilty_row.get("no_of_pkg")
+
+    def _v(x) -> str:
+        s = str(x).strip() if x is not None else ""
+        return s or "-"
+
     values = {
-        "1": bilty_row.get("gr_no") or "",
-        "2": _format_date(bilty_row.get("bilty_date")),
-        "3": bilty_row.get("consignor_name") or "",
-        "4": bilty_row.get("consignee_name") or "",
-        "5": (from_city or {}).get("city_name") or "",
-        "6": (to_city or {}).get("city_name") or "",
-        "7": str(bilty_row.get("no_of_pkg") or ""),
-        "8": bilty_row.get("gr_no") or "",
+        "1": _v(bilty_row.get("gr_no")),
+        "2": _v(_format_date(bilty_row.get("bilty_date"))),
+        "3": _v(bilty_row.get("consignor_name")),
+        "4": _v(bilty_row.get("consignee_name")),
+        "5": _v((from_city or {}).get("city_name")),
+        "6": _v((to_city or {}).get("city_name")),
+        "7": _v(pkg if pkg is not None else "0"),
+        "8": _v(bilty_row.get("gr_no")),
     }
 
     receivers = []
