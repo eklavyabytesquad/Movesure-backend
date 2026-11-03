@@ -133,7 +133,7 @@ from services.crossing_bill.nil_bilty_service import (
 from services.crossing_bill.bilty_crossing_bill_service import (
     create_bilty_crossing_bill, get_bilty_crossing_bill, list_bilty_crossing_bills,
     update_bilty_crossing_bill, delete_bilty_crossing_bill,
-    search_transporters, preview_gr, update_gr_kaat_pf,
+    search_transporters, preview_gr, update_gr_kaat_pf, search_grs,
 )
 from services.pohonch.pohonch_service import (
     list_pohonch, get_pohonch, get_pohonch_by_number,
@@ -2100,6 +2100,17 @@ async def bilty_crossing_bill_search_transporters(q: str = Query(..., min_length
         result = await _run(search_transporters, q, limit)
         return _response(result)
     except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/bilty-crossing-bill/search-gr")
+async def bilty_crossing_bill_search_gr(q: str = Query(..., min_length=1), transport_gstin: str = Query(None),
+                                        limit: int = Query(20)):
+    """GR suggestions while typing (partial match, best first). Registered BEFORE /{bill_id}."""
+    try:
+        return _response(await _run(search_grs, q, transport_gstin, limit))
+    except Exception as e:
+        log.exception("Error in bilty_crossing_bill_search_gr: %s", e)
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 

@@ -201,6 +201,91 @@ def search_transporters(q: str, limit: int = 20) -> dict:
     return {"status": "success", "data": results}
 
 
+def search_grs(q: str, transport_gstin: str = None, limit: int = 20) -> dict:
+    """Type-ahead for the 'add a GR' box: partial GR match ("5241" finds A15241) over bilty AND
+    station_bilty_summary, best match first (exact > ends with > starts with > contains, newest
+    first in each). transport_gstin (optional) puts that transporter's GRs on top. It does not hide
+    others, because a GR is sometimes billed to a different transporter than the one on its bilty.
+    Each row says if it's already on an active crossing bill. Pick one, then call gr-preview/{gr_no}."""
+    import re
+    qn = re.sub(r"[^A-Za-z0-9/\-]", "", (q or "")).upper()
+    if not qn:
+        return {"status": "success", "data": []}
+    limit = max(1, min(int(limit or 20), 50))
+    gst = (transport_gstin or "").strip().upper() or None
+    sb = get_supabase()
+
+    bq = (sb.table("bilty")
+          .select("gr_no, bilty_date, consignor_name, consignee_name, to_city_id, total, payment_mode, "
+                  "transport_name, transport_gst, wt, no_of_pkg")
+          .ilike("gr_no", f"%{qn}%").eq("is_active", True))
+    brows = bq.order("bilty_date", desc=True).limit(200).execute().data or []
+
+    sq = (sb.table("station_bilty_summary")
+          .select("gr_no, created_at, consignor, consignee, city_id, amount, payment_status, "
+                  "transport_name, transport_gst, weight, no_of_packets")
+          .ilike("gr_no", f"%{qn}%"))
+    srows = sq.order("created_at", desc=True).limit(200).execute().data or []
+
+    found = {}
+    for b in brows:
+        found.setdefault(b["gr_no"], {
+            "gr_no": b["gr_no"], "date": b.get("bilty_date"), "consignor_name": b.get("consignor_name"),
+            "consignee_name": b.get("consignee_name"), "city_id": b.get("to_city_id"),
+            "amount": b.get("total"), "payment_mode": (b.get("payment_mode") or "").lower(),
+            "transport_name": b.get("transport_name"), "transport_gstin": b.get("transport_gst"),
+            "weight": b.get("wt"), "packages": b.get("no_of_pkg"), "source_table": "bilty"})
+    for r in srows:
+        found.setdefault(r["gr_no"], {
+            "gr_no": r["gr_no"], "date": (r.get("created_at") or "")[:10] or None,
+            "consignor_name": r.get("consignor"), "consignee_name": r.get("consignee"),
+            "city_id": r.get("city_id"), "amount": r.get("amount"),
+            "payment_mode": (r.get("payment_status") or "").lower(),
+            "transport_name": r.get("transport_name"), "transport_gstin": r.get("transport_gst"),
+            "weight": r.get("weight"), "packages": r.get("no_of_packets"), "source_table": "station_bilty_summary"})
+
+    def rank(gr):
+        g = re.sub(r"[^A-Z0-9/\-]", "", gr.upper())
+        if g == qn:
+            return 0
+        if g.endswith(qn):
+            return 1
+        if g.startswith(qn) or re.sub(r"^[A-Z]+", "", g).startswith(qn):
+            return 2
+        return 3
+
+    rows = sorted(found.values(), key=lambda x: x["date"] or "", reverse=True)
+    rows = sorted(rows, key=lambda x: (rank(x["gr_no"]),
+                                       0 if gst and (x.get("transport_gstin") or "").upper() == gst else 1))[:limit]
+    grs = [r["gr_no"] for r in rows]
+
+    city_ids = list({r["city_id"] for r in rows if r.get("city_id")})
+    cities = {c["id"]: c["city_name"] for c in
+              (sb.table("cities").select("id, city_name").in_("id", city_ids).execute().data if city_ids else [])}
+    kaat = {k["gr_no"]: k for k in
+            (sb.table("bilty_wise_kaat").select("gr_no, kaat, pf").in_("gr_no", grs).execute().data if grs else [])}
+    billed = {}
+    if grs:
+        want = set(grs)
+        for bill in (sb.table("bilty_crossing_bill").select("id, bill_no, transport_name, metadata")
+                     .eq("is_active", True).execute().data or []):
+            for m in bill.get("metadata") or []:
+                if m.get("gr_no") in want:
+                    billed.setdefault(m["gr_no"], {"bill_id": bill["id"], "bill_no": bill["bill_no"],
+                                                   "transport_name": bill.get("transport_name")})
+
+    for r in rows:
+        r["destination"] = cities.get(r.pop("city_id", None), "")
+        k = kaat.get(r["gr_no"])
+        r["kaat"] = k.get("kaat") if k else None
+        r["pf"] = k.get("pf") if k else None
+        r["has_kaat_row"] = bool(k)
+        r["already_billed"] = billed.get(r["gr_no"])
+        r["same_transport"] = bool(gst) and (r.get("transport_gstin") or "").upper() == gst
+        r["label"] = f"{r['gr_no']}  ·  {r.get('consignor_name') or '-'} → {r['destination'] or '-'}"
+    return {"status": "success", "data": rows}
+
+
 def preview_gr(gr_no: str) -> dict:
     """The 'search a GR number' step — same shape that ends up in a
     bill's metadata, so what the user sees while building a bill is
