@@ -80,6 +80,7 @@ from services.bilty.transport_pending_service import get_all_transport_pending_b
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
 from services.kaat.kaat_update_service import bulk_update_kaat_rate, bulk_update_kaat_by_gr_nos, update_single_gr_kaat, update_gr_kaat, get_gr_kaat
+from services.hub.hub_challan_service import get_hub_challan, get_hub_masters, kaat_map as hub_kaat_map, pohonch_map as hub_pohonch_map, pod_gr_nos as hub_pod_gr_nos
 from services.kaat.kaat_bill_report_service import get_kaat_bill_report
 from services.kaat.kaat_rate_master_service import (
     list_hub_rates, get_hub_rate, create_hub_rate, update_hub_rate,
@@ -2487,6 +2488,62 @@ async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to
         return _response(result)
     except Exception as e:
         log.exception("Error in kaat_single_gr_update: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+# ============================================================
+# HUB CHALLAN DETAILS PAGE (/hub-management/<challan_no>)
+# ============================================================
+
+def _gr_list(gr_nos: str) -> list:
+    return [g.strip() for g in (gr_nos or "").split(",") if g.strip()]
+
+
+@app.get("/api/hub/masters")
+async def hub_masters(refresh: bool = Query(False)):
+    """Branches, cities, transports (+ by city), active hub rates (+ transport -> city map).
+    Cached 10 min on the server; ?refresh=true after adding a transport or hub rate."""
+    try:
+        return _response(await _run(get_hub_masters, refresh))
+    except Exception as e:
+        log.exception("Error in hub_masters: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/hub/challan/{challan_no}")
+async def hub_challan(challan_no: str = Path(...), include_masters: bool = Query(False)):
+    """Everything the hub challan page shows: challan, merged bilties, kaat, pohonch map, POD + Kanpur GRs."""
+    try:
+        return _response(await _run(get_hub_challan, challan_no, include_masters))
+    except Exception as e:
+        log.exception("Error in hub_challan: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/hub/kaat")
+async def hub_kaat(gr_nos: str = Query(..., description="comma separated")):
+    """gr_no -> bilty_wise_kaat row. Refresh after a kaat / transport assign."""
+    try:
+        return _response({"status": "success", "data": await _run(hub_kaat_map, _gr_list(gr_nos))})
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/hub/pohonch/by-gr")
+async def hub_pohonch_by_gr(gr_nos: str = Query(..., description="comma separated")):
+    """gr_no -> pohonch_number (cross challan), filtered on the server."""
+    try:
+        return _response({"status": "success", "data": await _run(hub_pohonch_map, _gr_list(gr_nos))})
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/hub/pod")
+async def hub_pod(gr_nos: str = Query(..., description="comma separated")):
+    """GRs (from the list) that already have a POD."""
+    try:
+        return _response({"status": "success", "data": await _run(hub_pod_gr_nos, _gr_list(gr_nos))})
+    except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
