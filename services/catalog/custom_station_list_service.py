@@ -37,20 +37,27 @@ DEFAULT_MAJOR_CITIES = [
     {"label": "ASANSOL", "match": ["ASANSOL"]},
     {"label": "NEPAL", "match": ["NEPAL"]},
     {"label": "IMPHAL", "match": ["IMPHAL MANIPUR", "IMPHAL"]},
+    {"label": "LUCKNOW", "match": ["LUCKNOW"]},
+    {"label": "GORAKHPUR", "match": ["GORAKHPUR"]},
+    {"label": "BASTI", "match": ["BASTI"]},
+    {"label": "BANARAS", "match": ["BANARAS"]},
+    {"label": "PRAYAGRAJ", "match": ["PRAYAGRAJ"]},
 ]
 STATE_ALIASES = {"UP": "Uttar Pradesh", "U.P": "Uttar Pradesh", "U.P.": "Uttar Pradesh", "ORISSA": "Odisha",
                  "NEW DELHI": "Delhi", "BENGAL": "West Bengal", "WB": "West Bengal", "J&K": "Jammu & Kashmir"}
 
-COMPANY_NAME = "SS TRANSPORT CORPORATION"
+COMPANY_NAME = "SS MOVESECURE LOGISTICS PVT LTD"
 COMPANY_PHONE = "+91-7668291228  |  +91-7902122230"
 COMPANY_WEBSITE = "www.ssmovesecure.com"
 STATIONS_URL = "https://www.ssmovesecure.com/#stations"
 
-NAVY = colors.HexColor("#1C2B3A")
-NAVY_LIGHT = colors.HexColor("#2D4A6B")
-GOLD = colors.HexColor("#C9A84C")
-GOLD_LIGHT = colors.HexColor("#F0D080")
-GOLD_PALE = colors.HexColor("#FBF0CC")
+# Theme = the SS Movesecure truck logo: blue cab + orange body.
+# (names kept from the old navy/gold theme so the drawing code is unchanged)
+NAVY = colors.HexColor("#161A8A")        # logo blue — header, banners, chips
+NAVY_LIGHT = colors.HexColor("#3A3FB0")
+GOLD = colors.HexColor("#F26522")        # logo orange — accent bars, footer, bullets
+GOLD_LIGHT = colors.HexColor("#FFB27A")  # light orange — text on blue
+GOLD_PALE = colors.HexColor("#FFF1E8")   # pale orange — major cities band
 DARK = colors.HexColor("#1A1A1A")
 GREY = colors.HexColor("#5A5A5A")
 WHITE = colors.white
@@ -179,12 +186,37 @@ COLS = 3
 
 
 def generate_custom_station_list_pdf(data: dict) -> bytes:
+    """Build the PDF. Text size: data["text_scale"] = "auto" (default) grows the station
+    text to fill the empty space without adding a page; or a number 0.8-2.0 (1 = old size)."""
+    ts = data.get("text_scale", "auto")
+    if ts not in (None, "", "auto"):
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            raise ValueError("text_scale must be 'auto' or a number between 0.8 and 2.0")
+        if not 0.8 <= ts <= 2.0:
+            raise ValueError("text_scale must be 'auto' or a number between 0.8 and 2.0")
+        return _render(data, ts)[0]
+    best, pages = _render(data, 1.0)
+    lo, hi = 1.0, 1.9
+    for _ in range(6):                     # binary search: largest scale with no extra page
+        mid = (lo + hi) / 2
+        pdf, n = _render(data, mid)
+        if n <= pages:
+            lo, best = mid, pdf
+        else:
+            hi = mid
+    return best
+
+
+def _render(data: dict, scale: float) -> tuple[bytes, int]:
     """
     data = {
       company_name: "SHINE PRODUCTS"            (required),
       logo: "data:image/png;base64,..."        (the pasted image; optional),
       states?: ["Uttar Pradesh", "Bihar", ...]  (default DEFAULT_STATES; 'UP' / 'Orissa' accepted),
       major_cities?: ["DELHI", "KANPUR", ...]   (default DEFAULT_MAJOR_CITIES; [] hides the band),
+      major_cities_position?: "bottom" | "top"  (default "bottom" — after the state lists),
       title?: "STATION LIST FOR SHINE PRODUCTS",
       show_watermark?: true
     }
@@ -192,6 +224,10 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
     company = (data.get("company_name") or "").strip().upper()
     if not company:
         raise ValueError("company_name is required")
+    position = str(data.get("major_cities_position") or "bottom").strip().lower()
+    if position not in ("bottom", "top"):
+        raise ValueError("major_cities_position must be 'bottom' or 'top'")
+    majors_top = position == "top"
     states = [_norm_state(s) for s in (data.get("states") or DEFAULT_STATES) if str(s).strip()]
     majors = _major_cities(data["major_cities"] if data.get("major_cities") is not None else DEFAULT_MAJOR_CITIES)
     title = (data.get("title") or f"STATION LIST FOR {company}").strip().upper()
@@ -202,6 +238,10 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
     cities = _cities_by_state(states)
     total = sum(len(v) for v in cities.values())
 
+    row_h = ROW_H * scale
+    banner_h = BANNER_H * min(scale, 1.4)
+    name_fs = min(9 * scale + 1.5, 15)          # station names: bigger than the old 9pt even at scale 1
+    banner_fs = 11 * min(scale, 1.4)
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
     c.setTitle(title)
@@ -223,7 +263,11 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
             text_x = M + box + 5 * mm
         right_w = 0
         if ss_logo:
-            right_w = _draw_fit(c, ss_logo, PAGE_W - M, PAGE_H - HEADER_H + 15 * mm, 26 * mm, 14 * mm, align="right")
+            # white tile so the logo's blue cab stays visible on the blue header
+            c.setFillColor(WHITE)
+            c.roundRect(PAGE_W - M - 30 * mm, PAGE_H - HEADER_H + 13.5 * mm, 30 * mm, 17 * mm, 2.5 * mm, fill=1, stroke=0)
+            right_w = _draw_fit(c, ss_logo, PAGE_W - M - 2 * mm, PAGE_H - HEADER_H + 15 * mm, 26 * mm, 14 * mm, align="right")
+            right_w = max(right_w, 30 * mm)
             c.setFillColor(GOLD_LIGHT)
             c.setFont("Helvetica-Bold", 6.5)
             c.drawRightString(PAGE_W - M, PAGE_H - HEADER_H + 10 * mm, COMPANY_NAME)
@@ -274,24 +318,21 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
         return False
 
     def banner(text):
-        y = state["y"] - BANNER_H
+        y = state["y"] - banner_h
         c.setFillColor(NAVY)
-        c.roundRect(M, y, PAGE_W - 2 * M, BANNER_H, 2 * mm, fill=1, stroke=0)
+        c.roundRect(M, y, PAGE_W - 2 * M, banner_h, 2 * mm, fill=1, stroke=0)
         c.setFillColor(GOLD)
-        c.rect(M, y, 3 * mm, BANNER_H, fill=1, stroke=0)
+        c.rect(M, y, 3 * mm, banner_h, fill=1, stroke=0)
         c.setFillColor(WHITE)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(M + 6 * mm, y + 3 * mm, text)
+        c.setFont("Helvetica-Bold", banner_fs)
+        c.drawString(M + 6 * mm, y + (banner_h - banner_fs * 0.7) / 2, text)
         state["y"] = y - 4 * mm
 
-    new_page()
-
-    # ── major cities band ──
-    if majors:
-        need(30 * mm)
-        c.setFillColor(GOLD_PALE)
+    def major_band():
         rows_needed = (len(majors) + 3) // 4
         band_h = 12 * mm + rows_needed * 9 * mm
+        need(band_h + 7 * mm)
+        c.setFillColor(GOLD_PALE)
         y = state["y"] - band_h
         c.roundRect(M, y, PAGE_W - 2 * M, band_h, 3 * mm, fill=1, stroke=0)
         c.setStrokeColor(GOLD)
@@ -312,39 +353,46 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
             c.drawCentredString(cx + chip_w / 2, cy + 2.3 * mm, name)
         state["y"] = y - 7 * mm
 
+    new_page()
+    if majors and majors_top:
+        major_band()
+
     # ── states ──
     col_w = (PAGE_W - 2 * M) / COLS
     for st in states:
         names = cities.get(st) or []
-        need(BANNER_H + 4 * mm + ROW_H * min(3, max(1, len(names))))
-        banner(f"{st.upper()}  —  {len(names)} STATIONS")
+        need(banner_h + 4 * mm + row_h * min(3, max(1, len(names))))
+        banner(f"{st.upper()}  —  {len(names)} STATION{'' if len(names) == 1 else 'S'}")
         if not names:
             c.setFillColor(GREY)
             c.setFont("Helvetica-Oblique", 9)
             c.drawString(M + 3 * mm, state["y"] - 3 * mm, "No stations listed for this state yet.")
-            state["y"] -= ROW_H + 4 * mm
+            state["y"] -= row_h + 4 * mm
             continue
         i = 0
         while i < len(names):
-            avail_rows = int((state["y"] - FOOTER_H - 6 * mm) // ROW_H)
+            avail_rows = int((state["y"] - FOOTER_H - 6 * mm) // row_h)
             if avail_rows < 1:
                 new_page()
                 banner(f"{st.upper()}  (CONTD.)")
                 continue
             chunk = names[i:i + avail_rows * COLS]
             per_col = (len(chunk) + COLS - 1) // COLS
-            c.setFont("Helvetica", 9)
             for j, nm in enumerate(chunk):
                 col, row = divmod(j, per_col)
                 x = M + 3 * mm + col * col_w
-                yy = state["y"] - (row + 1) * ROW_H + 1.5 * mm
+                yy = state["y"] - (row + 1) * row_h + (row_h - name_fs * 0.7) / 2
                 c.setFillColor(GOLD)
-                c.circle(x + 1 * mm, yy + 1.2 * mm, 0.8 * mm, fill=1, stroke=0)
+                c.circle(x + 1 * mm, yy + name_fs * 0.33, 0.8 * mm * min(scale, 1.4), fill=1, stroke=0)
                 c.setFillColor(DARK)
-                c.setFont("Helvetica", _fit(c, nm, "Helvetica", 9, col_w - 8 * mm, 6))
+                c.setFont("Helvetica", _fit(c, nm, "Helvetica", name_fs, col_w - 7 * mm, 6))
                 c.drawString(x + 3.5 * mm, yy, nm)
-            state["y"] -= per_col * ROW_H + 5 * mm
+            state["y"] -= per_col * row_h + 5 * mm
             i += len(chunk)
+
+    # ── major cities band (default: below the state lists) ──
+    if majors and not majors_top:
+        major_band()
 
     # ── closing line ──
     need(16 * mm)
@@ -352,11 +400,11 @@ def generate_custom_station_list_pdf(data: dict) -> bytes:
     c.setFillColor(NAVY)
     c.roundRect(M, y, PAGE_W - 2 * M, 12 * mm, 2 * mm, fill=1, stroke=0)
     c.setFillColor(GOLD_LIGHT)
-    c.setFont("Helvetica-Bold", 10.5)
-    c.drawCentredString(PAGE_W / 2, y + 4.5 * mm,
-                        f"{COMPANY_NAME}  ·  {len(states)} states  ·  {total} stations  ·  {STATIONS_URL}")
+    closing = f"{COMPANY_NAME}  ·  {len(states)} states  ·  {total} stations  ·  {STATIONS_URL}"
+    c.setFont("Helvetica-Bold", _fit(c, closing, "Helvetica-Bold", 10.5, PAGE_W - 2 * M - 8 * mm))
+    c.drawCentredString(PAGE_W / 2, y + 4.5 * mm, closing)
 
     footer()
     c.showPage()
     c.save()
-    return buf.getvalue()
+    return buf.getvalue(), state["page"]

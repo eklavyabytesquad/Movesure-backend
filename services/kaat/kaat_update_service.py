@@ -496,119 +496,189 @@ def update_single_gr_kaat(
     kaat_dd: Optional[float] = None,
     pf_override: Optional[float] = None,
 ) -> dict:
-    """
-    Update kaat fields for a single GR number in bilty_wise_kaat.
+    """Old signature, kept for callers. Goes through update_gr_kaat (charges included)."""
+    return update_gr_kaat(gr_no, {"kaat_rate": kaat_rate, "kaat": kaat, "kaat_dd": kaat_dd, "pf": pf_override})
 
-    Priority logic:
-      - If kaat_rate is given → kaat = weight * kaat_rate (fetched from bilty/sbs)
-                                pf   = total - kaat - dd
-      - If kaat is given directly (no kaat_rate) → use it as-is,
-                                pf = total - kaat - dd (fetched from bilty/sbs)
-      - If only kaat_dd is given → update only dd_chrg
-      - pf_override: if explicitly provided, overrides the calculated pf
-    """
-    if not gr_no:
-        return {"status": "error", "message": "gr_no is required", "status_code": 400}
-    if kaat_rate is None and kaat is None and kaat_dd is None and pf_override is None:
-        return {"status": "error", "message": "At least one of kaat_rate, kaat, kaat_dd, pf must be provided", "status_code": 400}
 
-    sb = get_supabase()
+# ════════════════════════════════════════════════════════════════════════════
+# Full per-bilty kaat edit: rate type (per kg / per pkg), rate, bilty charge,
+# labour charge, ewb / other charge, DD, and kaat / pf overrides.
+#
+#   base  = weight x rate_per_kg            (rate_type = per_kg)
+#         = packages x rate_per_pkg         (rate_type = per_pkg)
+#   kaat  = base + bilty_chrg + labour_chrg + ewb_chrg + other_chrg
+#   pf    = total - kaat - dd               (to-pay / foc)
+#         = -kaat                           (paid)
+# Same formula the stored data already follows (e.g. A07478: 420 kg x 2 + 20 = 860).
+# ════════════════════════════════════════════════════════════════════════════
+KAAT_SELECT = ("gr_no, rate_type, rate_per_kg, rate_per_pkg, actual_kaat_rate, kaat, pf, dd_chrg, "
+               "bilty_chrg, labour_chrg, ewb_chrg, other_chrg")
+CHARGE_FIELDS = ("bilty_chrg", "labour_chrg", "ewb_chrg", "other_chrg")
+EDIT_FIELDS = ("rate_type", "kaat_rate", "rate_per_kg", "rate_per_pkg", "labour_per_pkg",
+               "kaat_dd", "dd_chrg", "kaat", "pf") + CHARGE_FIELDS
+_CALC_FIELDS = ("rate_type", "kaat_rate", "rate_per_kg", "rate_per_pkg", "labour_per_pkg") + CHARGE_FIELDS
 
-    # Fetch current kaat row
-    kaat_res = (
-        sb.table("bilty_wise_kaat")
-        .select("gr_no, kaat, pf, actual_kaat_rate, dd_chrg")
-        .eq("gr_no", gr_no)
-        .execute()
-    )
-    if not kaat_res.data:
-        return {"status": "error", "message": f"GR '{gr_no}' not found in bilty_wise_kaat", "status_code": 404}
 
-    current = kaat_res.data[0]
+def _f(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
-    # Fetch weight, total and payment_mode from bilty or station_bilty_summary
-    wt, total, payment_mode = None, None, "to-pay"
-    bilty_res = (
-        sb.table("bilty")
-        .select("wt, total, payment_mode")
-        .eq("gr_no", gr_no)
-        .eq("is_active", True)
-        .limit(1)
-        .execute()
-    )
-    if bilty_res.data:
-        wt           = bilty_res.data[0].get("wt") or 0
-        total        = bilty_res.data[0].get("total") or 0
-        payment_mode = bilty_res.data[0].get("payment_mode") or "to-pay"
-    else:
-        sbs_res = (
-            sb.table("station_bilty_summary")
-            .select("weight, amount, payment_status")
-            .eq("gr_no", gr_no)
-            .limit(1)
-            .execute()
-        )
-        if sbs_res.data:
-            wt           = sbs_res.data[0].get("weight") or 0
-            total        = sbs_res.data[0].get("amount") or 0
-            payment_mode = sbs_res.data[0].get("payment_status") or "to-pay"
 
-    payload: dict = {}
+def _given(data: dict, k: str) -> bool:
+    return data.get(k) is not None and data.get(k) != ""
 
-    # Determine new kaat value
-    if kaat_rate is not None:
-        if wt is None:
-            return {"status": "error", "message": f"Could not find weight for GR '{gr_no}'", "status_code": 404}
-        new_kaat = round(wt * kaat_rate, 2)
-        payload["actual_kaat_rate"] = kaat_rate
-        payload["kaat"] = new_kaat
-    elif kaat is not None:
-        new_kaat = kaat
-        payload["kaat"] = new_kaat
-    else:
-        new_kaat = current.get("kaat") or 0
 
-    # Determine new pf: pf = total - kaat - dd (negative for paid bilties)
-    if pf_override is not None:
-        payload["pf"] = pf_override
-    elif "kaat" in payload and total is not None:
-        # use incoming kaat_dd if provided, otherwise keep existing dd_chrg
-        dd_for_pf = kaat_dd if kaat_dd is not None else (current.get("dd_chrg") or 0)
-        payload["pf"] = round(-new_kaat, 2) if payment_mode == "paid" else round(total - new_kaat - dd_for_pf, 2)
+def fetch_gr_info(sb, gr_no: str) -> dict | None:
+    """Weight, packages, freight total and payment mode from bilty, else station_bilty_summary."""
+    b = (sb.table("bilty").select("wt, no_of_pkg, total, payment_mode").eq("gr_no", gr_no)
+         .eq("is_active", True).limit(1).execute().data)
+    if b:
+        b = b[0]
+        return {"weight": _f(b.get("wt")), "packages": _f(b.get("no_of_pkg")), "total": _f(b.get("total")),
+                "payment_mode": (b.get("payment_mode") or "to-pay").strip().lower(), "source_table": "bilty"}
+    s = (sb.table("station_bilty_summary").select("weight, no_of_packets, amount, payment_status")
+         .eq("gr_no", gr_no).limit(1).execute().data)
+    if s:
+        s = s[0]
+        return {"weight": _f(s.get("weight")), "packages": _f(s.get("no_of_packets")), "total": _f(s.get("amount")),
+                "payment_mode": (s.get("payment_status") or "to-pay").strip().lower(),
+                "source_table": "station_bilty_summary"}
+    return None
 
-    if kaat_dd is not None:
-        payload["dd_chrg"] = kaat_dd
 
-    res = (
-        sb.table("bilty_wise_kaat")
-        .update(payload)
-        .eq("gr_no", gr_no)
-        .execute()
-    )
-    if not res.data:
-        return {"status": "error", "message": "Update failed — row not found or unchanged", "status_code": 500}
-
-    row = res.data[0]
-    result = {
-        "status": "success",
-        "gr_no": gr_no,
-        "updated": {
-            "kaat_rate": row.get("actual_kaat_rate"),
-            "kaat": row.get("kaat"),
-            "kaat_dd": row.get("dd_chrg"),
-            "pf": row.get("pf"),
-        },
-        "weight": wt,
-        "total": total,
+def kaat_detail(row: dict | None, info: dict | None) -> dict:
+    """The breakdown the edit modal shows (current values)."""
+    row, info = row or {}, info or {}
+    rate_type = row.get("rate_type") or "per_kg"
+    per_kg = _f(row.get("actual_kaat_rate")) or _f(row.get("rate_per_kg"))
+    return {
+        "rate_type": rate_type,
+        "rate": _f(row.get("rate_per_pkg")) if rate_type == "per_pkg" else per_kg,
+        "rate_per_kg": per_kg,
+        "rate_per_pkg": _f(row.get("rate_per_pkg")),
+        **{k: _f(row.get(k)) for k in CHARGE_FIELDS},
+        "dd_chrg": _f(row.get("dd_chrg")),
+        "kaat": _f(row.get("kaat")),
+        "pf": _f(row.get("pf")),
+        "weight": info.get("weight"),
+        "packages": info.get("packages"),
+        "total": info.get("total"),
+        "payment_mode": info.get("payment_mode"),
+        "has_kaat_row": bool(row),
     }
 
-    # Sync into pohonch bilty_metadata
-    _sync_pohonch_metadata(sb, [{
-        "gr_no": gr_no,
-        "kaat": row.get("kaat"),
-        "pf": row.get("pf"),
-        "kaat_rate": row.get("actual_kaat_rate"),
-        "kaat_dd": row.get("dd_chrg"),
-    }])
 
-    return result
+def compute_kaat(current: dict | None, info: dict | None, data: dict) -> tuple[dict, dict]:
+    """Merge the edit onto the current row and recalculate.
+    Returns (payload for bilty_wise_kaat, breakdown with the new values). Raises ValueError on bad input."""
+    current, info, data = current or {}, info or {}, data or {}
+    if not any(_given(data, k) for k in EDIT_FIELDS):
+        raise ValueError("Send at least one of: " + ", ".join(EDIT_FIELDS))
+
+    rate_type = data.get("rate_type") if _given(data, "rate_type") else None
+    if rate_type is None and _given(data, "kaat_rate"):
+        rate_type = "per_kg"                    # old callers: kaat_rate alone always meant per kg
+    rate_type = str(rate_type or current.get("rate_type") or "per_kg").strip().lower().replace("-", "_")
+    rate_type = {"kg": "per_kg", "perkg": "per_kg", "pkg": "per_pkg", "perpkg": "per_pkg",
+                 "per_package": "per_pkg", "package": "per_pkg"}.get(rate_type, rate_type)
+    if rate_type not in ("per_kg", "per_pkg"):
+        raise ValueError("rate_type must be 'per_kg' or 'per_pkg'")
+
+    cur = kaat_detail(current, info)
+    per_kg, per_pkg = cur["rate_per_kg"], cur["rate_per_pkg"]
+    if _given(data, "rate_per_kg"):
+        per_kg = _f(data["rate_per_kg"])
+    if _given(data, "rate_per_pkg"):
+        per_pkg = _f(data["rate_per_pkg"])
+    if _given(data, "kaat_rate"):               # "the rate" for the chosen rate_type
+        if rate_type == "per_kg":
+            per_kg = _f(data["kaat_rate"])
+        else:
+            per_pkg = _f(data["kaat_rate"])
+
+    charges = {k: (_f(data[k]) if _given(data, k) else cur[k]) for k in CHARGE_FIELDS}
+    if _given(data, "labour_per_pkg"):          # labour charged per package
+        charges["labour_chrg"] = round(_f(data["labour_per_pkg"]) * _f(info.get("packages")), 2)
+    dd_key = "kaat_dd" if _given(data, "kaat_dd") else ("dd_chrg" if _given(data, "dd_chrg") else None)
+    dd = _f(data[dd_key]) if dd_key else cur["dd_chrg"]
+
+    recalc = any(_given(data, k) for k in _CALC_FIELDS)
+    if recalc and not info:
+        raise ValueError("Could not find weight / packages for this GR")
+    wt, pkgs = _f(info.get("weight")), _f(info.get("packages"))
+    base = round(wt * per_kg if rate_type == "per_kg" else pkgs * per_pkg, 2)
+
+    if _given(data, "kaat"):                    # typed kaat wins over the formula
+        kaat = round(_f(data["kaat"]), 2)
+    elif recalc:
+        kaat = round(base + sum(charges.values()), 2)
+    else:
+        kaat = cur["kaat"]
+
+    if _given(data, "pf"):                      # typed pf wins
+        pf = round(_f(data["pf"]), 2)
+    elif recalc or _given(data, "kaat") or dd_key:
+        mode = info.get("payment_mode") or "to-pay"
+        pf = round(-kaat, 2) if mode == "paid" else round(_f(info.get("total")) - kaat - dd, 2)
+    else:
+        pf = cur["pf"]
+
+    payload = {"rate_type": rate_type, "rate_per_pkg": per_pkg, "kaat": kaat, "pf": pf, "dd_chrg": dd, **charges}
+    if rate_type == "per_kg":
+        payload["actual_kaat_rate"] = per_kg
+        payload["rate_per_kg"] = per_kg
+    extra = "".join(f" + {charges[k]:g} {k.replace('_chrg', '')}" for k in CHARGE_FIELDS if charges[k])
+    unit = f"{wt:g} kg x {per_kg:g}" if rate_type == "per_kg" else f"{pkgs:g} pkg x {per_pkg:g}"
+    breakdown = {
+        **kaat_detail({**current, **payload}, info),
+        "base_kaat": base,
+        "formula": f"{unit}{extra} = {round(base + sum(charges.values()), 2):g}"
+                   + (f"  (kaat typed: {kaat:g})" if _given(data, "kaat") else ""),
+    }
+    return payload, breakdown
+
+
+def get_gr_kaat(gr_no: str) -> dict:
+    """Current kaat breakdown for one GR (prefills the edit modal)."""
+    gr_no = (gr_no or "").strip()
+    if not gr_no:
+        return {"status": "error", "message": "gr_no is required", "status_code": 400}
+    sb = get_supabase()
+    row = (sb.table("bilty_wise_kaat").select(KAAT_SELECT).eq("gr_no", gr_no).limit(1).execute().data or [None])[0]
+    info = fetch_gr_info(sb, gr_no)
+    if not row and not info:
+        return {"status": "error", "message": f"GR '{gr_no}' not found", "status_code": 404}
+    return {"status": "success", "gr_no": gr_no, "data": kaat_detail(row, info)}
+
+
+def update_gr_kaat(gr_no: str, data: dict) -> dict:
+    """Edit one GR's kaat in bilty_wise_kaat (formula above), then sync pohonch + transport ledgers."""
+    gr_no = (gr_no or "").strip()
+    if not gr_no:
+        return {"status": "error", "message": "gr_no is required", "status_code": 400}
+    sb = get_supabase()
+    row = (sb.table("bilty_wise_kaat").select(KAAT_SELECT).eq("gr_no", gr_no).limit(1).execute().data or [None])[0]
+    if not row:
+        return {"status": "error", "message": f"GR '{gr_no}' not found in bilty_wise_kaat", "status_code": 404}
+    info = fetch_gr_info(sb, gr_no)
+    try:
+        payload, breakdown = compute_kaat(row, info, data or {})
+    except ValueError as e:
+        return {"status": "error", "message": str(e), "status_code": 400}
+    if (data or {}).get("updated_by"):
+        payload["updated_by"] = data["updated_by"]
+    res = sb.table("bilty_wise_kaat").update(payload).eq("gr_no", gr_no).execute()
+    if not res.data:
+        return {"status": "error", "message": "Update failed — row not found or unchanged", "status_code": 500}
+    _sync_pohonch_metadata(sb, [{"gr_no": gr_no, "kaat": payload["kaat"], "pf": payload["pf"],
+                                 "kaat_rate": breakdown["rate"], "kaat_dd": payload["dd_chrg"]}])
+    return {
+        "status": "success", "gr_no": gr_no,
+        # same keys as before, so the existing Kaat Update screen keeps working
+        "updated": {"kaat_rate": breakdown["rate"], "kaat": payload["kaat"],
+                    "kaat_dd": payload["dd_chrg"], "pf": payload["pf"]},
+        "weight": (info or {}).get("weight"), "total": (info or {}).get("total"),
+        "data": breakdown,
+    }

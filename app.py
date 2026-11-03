@@ -41,6 +41,7 @@ from services.catalog.station_catalog_service import generate_station_catalog_pd
 from services.catalog.custom_station_list_service import generate_custom_station_list_pdf, available_states as station_list_states
 from services.catalog.rate_list_service import generate_rate_list_pdf, SAMPLE_CONSIGNOR
 from services.catalog.tracking_card_service import generate_tracking_card_pdf, SAMPLE_GSTIN, SAMPLE_CONSIGNOR as TRACKING_SAMPLE_CONSIGNOR
+from services.catalog.tracking_qr_service import generate_tracking_qr, find_consignor, tracking_url, ConsignorNotFound
 from services.ewaybill.consolidated_ewaybill_service import create_consolidated_ewaybill
 from services.ewaybill.transporter_id_service import update_transporter_id
 from services.ewaybill.transporter_update_with_pdf_service import update_transporter_and_get_pdf
@@ -78,7 +79,7 @@ from services.bilty.city_state_service import assign_state_to_city, bulk_assign_
 from services.bilty.transport_pending_service import get_all_transport_pending_bilties
 from services.bilty.transport_pending_grouped_service import get_grouped_transport_pending_bilties
 from services.bilty.transport_bilty_report_service import get_transport_bilty_report
-from services.kaat.kaat_update_service import bulk_update_kaat_rate, bulk_update_kaat_by_gr_nos, update_single_gr_kaat
+from services.kaat.kaat_update_service import bulk_update_kaat_rate, bulk_update_kaat_by_gr_nos, update_single_gr_kaat, update_gr_kaat, get_gr_kaat
 from services.kaat.kaat_bill_report_service import get_kaat_bill_report
 from services.kaat.kaat_rate_master_service import (
     list_hub_rates, get_hub_rate, create_hub_rate, update_hub_rate,
@@ -437,7 +438,8 @@ async def station_list_options():
 @app.post("/api/catalog/station-list")
 async def station_list_pdf(request: Request):
     """Branded station list PDF.
-    Body: { company_name, logo (pasted image as data URL / base64), states?, major_cities?, title?, show_watermark? }
+    Body: { company_name, logo (pasted image as data URL / base64), states?, major_cities?,
+            major_cities_position? ("bottom" default | "top"), title?, show_watermark? }
     Returns application/pdf."""
     try:
         data = await request.json()
@@ -479,6 +481,49 @@ async def get_tracking_card_pdf(gstin: str = Query(SAMPLE_GSTIN), consignor_name
         )
     except Exception as e:
         log.exception("Error in get_tracking_card_pdf: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/catalog/tracking-qr")
+async def get_tracking_qr(
+    gstin: str = Query(None), consignor_id: str = Query(None), name: str = Query(None),
+    style: str = Query("card"), format: str = Query("png"), size: int = Query(1000),
+    download: bool = Query(False),
+):
+    """Tracking QR image for a consignor (links to ssmovesecure.com/tracking/<GSTIN>).
+    Find the consignor by gstin, consignor_id or name. style=card|plain, format=png|svg."""
+    try:
+        data, media, c = await _run(generate_tracking_qr, gstin, consignor_id, name, style, format, size)
+        ext = "svg" if media == "image/svg+xml" else "png"
+        fname = "tracking_qr_%s.%s" % (re.sub(r"[^A-Za-z0-9]+", "_", c["company_name"]).strip("_").lower(), ext)
+        return Response(content=data, media_type=media, headers={
+            "Content-Disposition": '%s; filename="%s"' % ("attachment" if download else "inline", fname),
+            "X-Tracking-Url": c["tracking_url"], "Cache-Control": "public, max-age=3600"})
+    except ConsignorNotFound as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=404)
+    except ValueError as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=400)
+    except Exception as e:
+        log.exception("Error in get_tracking_qr: %s", e)
+        return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/catalog/tracking-qr/info")
+async def get_tracking_qr_info(gstin: str = Query(None), consignor_id: str = Query(None), name: str = Query(None)):
+    """JSON: the consignor, its tracking link and ready-made image URLs (for a preview + download button)."""
+    try:
+        c = await _run(find_consignor, gstin, consignor_id, name)
+        img = "/api/catalog/tracking-qr?gstin=" + c["gst_num"]
+        return _response({"status": "success", "data": {
+            **c, "tracking_url": tracking_url(c["gst_num"]),
+            "card_png": img, "plain_png": img + "&style=plain", "svg": img + "&format=svg",
+            "download_png": img + "&download=true"}})
+    except ConsignorNotFound as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=404)
+    except ValueError as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=400)
+    except Exception as e:
+        log.exception("Error in get_tracking_qr_info: %s", e)
         return JSONResponse(content={"status": "error", "message": f"Internal server error: {str(e)}"}, status_code=500)
 
 
@@ -2092,10 +2137,9 @@ async def bilty_crossing_bill_update(request: Request, bill_id: str = Path(...))
 
 @app.put("/api/bilty-crossing-bill/{bill_id}/gr/{gr_no}")
 async def bilty_crossing_bill_update_gr(request: Request, bill_id: str = Path(...), gr_no: str = Path(...)):
-    """Edit kaat and/or pf for one GR on this bill — updates BOTH
-    bilty_wise_kaat AND this bill's own metadata, then recomputes the
-    bill's totals (including total_paid_kaat / net_payable).
-    Body: { kaat?, pf?, updated_by? } — at least one of kaat/pf required."""
+    """Edit one GR on this bill: rate_type, kaat_rate, rate_per_kg / rate_per_pkg, bilty_chrg,
+    labour_chrg / labour_per_pkg, ewb_chrg, other_chrg, kaat_dd, kaat, pf, updated_by.
+    Updates bilty_wise_kaat AND this bill's metadata, then recomputes the bill totals."""
     try:
         data = await request.json()
         result = await _run(update_gr_kaat_pf, bill_id, gr_no, data)
@@ -2298,10 +2342,19 @@ class BulkKaatUpdateRequest(BaseModel):
 
 
 class SingleGrKaatUpdateRequest(BaseModel):
-    kaat_rate: Optional[float] = None
-    kaat: Optional[float] = None
+    rate_type: Optional[str] = None        # 'per_kg' | 'per_pkg'
+    kaat_rate: Optional[float] = None      # rate for rate_type (alone = per kg, as before)
+    rate_per_kg: Optional[float] = None
+    rate_per_pkg: Optional[float] = None
+    bilty_chrg: Optional[float] = None
+    labour_chrg: Optional[float] = None
+    labour_per_pkg: Optional[float] = None  # labour_chrg = packages x this
+    ewb_chrg: Optional[float] = None
+    other_chrg: Optional[float] = None
     kaat_dd: Optional[float] = None
-    pf: Optional[float] = None
+    kaat: Optional[float] = None           # typed kaat, wins over the formula
+    pf: Optional[float] = None             # typed pf, wins
+    updated_by: Optional[str] = None
 
 
 @app.post("/api/kaat/bulk-update")
@@ -2394,24 +2447,32 @@ async def kaat_bill_report(body: KaatBillReportRequest):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
+@app.get("/api/kaat/gr/{gr_no}")
+async def kaat_single_gr_get(gr_no: str = Path(..., description="GR number")):
+    """Current kaat breakdown for one GR: rate type, rates, bilty / labour / ewb / other charge,
+    dd, kaat, pf, weight, packages, freight total. Use it to prefill the kaat edit modal."""
+    try:
+        return _response(await _run(get_gr_kaat, gr_no))
+    except Exception as e:
+        log.exception("Error in kaat_single_gr_get: %s", e)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.patch("/api/kaat/gr/{gr_no}")
 async def kaat_single_gr_update(gr_no: str = Path(..., description="GR number to update"), body: SingleGrKaatUpdateRequest = None):
     """
-    Update kaat fields for a single GR number.
-
-    Body (all optional, at least one required):
-      kaat_rate  — recalculates kaat = weight * kaat_rate, pf = total - kaat
-      kaat       — set kaat directly; pf = total - kaat is recalculated
-      kaat_dd    — update dd_chrg only
-      pf         — override pf directly
+    Edit kaat for one GR. All fields optional, at least one required:
+      rate_type ('per_kg' | 'per_pkg'), kaat_rate, rate_per_kg, rate_per_pkg,
+      bilty_chrg, labour_chrg, labour_per_pkg, ewb_chrg, other_chrg, kaat_dd,
+      kaat (typed, wins over the formula), pf (typed, wins), updated_by.
+    kaat = (weight x rate_per_kg | packages x rate_per_pkg) + bilty + labour + ewb + other
+    pf   = total - kaat - dd   (paid bilty: -kaat)
     """
     if body is None:
         return JSONResponse(content={"status": "error", "message": "Request body is required"}, status_code=400)
     try:
-        result = await _run(
-            update_single_gr_kaat,
-            gr_no, body.kaat_rate, body.kaat, body.kaat_dd, body.pf,
-        )
+        data = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+        result = await _run(update_gr_kaat, gr_no, data)
         return _response(result)
     except Exception as e:
         log.exception("Error in kaat_single_gr_update: %s", e)

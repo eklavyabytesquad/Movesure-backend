@@ -13,6 +13,7 @@ required input; consignor_name is accepted only as an optional extra
 narrower. `station_bilty_summary` has no GST column at all, so
 GSTIN-matched results only ever come from the `bilty` table.
 """
+import re
 from collections import Counter
 from services.supabase_client import get_supabase
 
@@ -33,7 +34,7 @@ def _resolve_cities(sb, city_ids: set) -> dict:
 
 def get_consignor_bilties(consignor_gst: str, consignor_name: str = None,
                            from_date: str = None, to_date: str = None,
-                           page: int = 1, page_size: int = 50) -> dict:
+                           page: int = 1, page_size: int = 50, gr_search: str = None) -> dict:
     if not consignor_gst:
         return {"status": "error", "message": "consignor_gst is required", "status_code": 400}
 
@@ -58,7 +59,14 @@ def get_consignor_bilties(consignor_gst: str, consignor_name: str = None,
         b_query = b_query.gte("bilty_date", from_date)
     if to_date:
         b_query = b_query.lte("bilty_date", to_date)
-    bilty_rows = b_query.execute().data or []
+    # fetch every row (in blocks of 1000, ordered) so nothing is cut off for big consignors
+    bilty_rows, start = [], 0
+    while True:
+        chunk = b_query.order("id").range(start, start + 999).execute().data or []
+        bilty_rows += chunk
+        if len(chunk) < 1000:
+            break
+        start += 1000
     for r in bilty_rows:
         r["source_table"] = "bilty"
 
@@ -73,6 +81,24 @@ def get_consignor_bilties(consignor_gst: str, consignor_name: str = None,
     resolved_name = Counter(r["consignor_name"] for r in all_rows if r.get("consignor_name")).most_common(1)[0][0]
 
     all_rows.sort(key=lambda r: r["bilty_date"] or "", reverse=True)
+    q = re.sub(r"[^A-Z0-9]", "", (gr_search or "").upper())
+    if q:
+        # partial GR search: "5241" finds A15241. Best match first:
+        # exact > ends with > number part starts with > contains (newest first in each group)
+        def rank(r):
+            g = re.sub(r"[^A-Z0-9]", "", (r.get("gr_no") or "").upper())
+            if g == q:
+                return 0
+            if g.endswith(q):
+                return 1
+            if re.sub(r"^[A-Z]+", "", g).startswith(q) or g.startswith(q):
+                return 2
+            return 3 if q in g else None
+        ranked = [(rank(r), r) for r in all_rows]
+        all_rows = [r for k, r in sorted([x for x in ranked if x[0] is not None], key=lambda x: x[0])]
+        if not all_rows:
+            return {"status": "success", "data": {"consignor_gst": consignor_gst, "consignor_name": resolved_name,
+                    "total": 0, "rows": [], "page": page, "page_size": page_size, "has_more": False}}
     total = len(all_rows)
     offset = (page - 1) * page_size
     page_rows = all_rows[offset: offset + page_size]

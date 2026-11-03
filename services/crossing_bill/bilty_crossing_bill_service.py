@@ -17,6 +17,8 @@ instead, see services/crossing_bill/nil_bilty_service.py.
 from __future__ import annotations
 from datetime import datetime, timezone
 from services.supabase_client import get_supabase
+from services.kaat.kaat_update_service import (KAAT_SELECT, CHARGE_FIELDS, EDIT_FIELDS, compute_kaat,
+                                               fetch_gr_info, kaat_detail, _sync_pohonch_metadata)
 
 BILL_COLS = (
     "id, bill_no, transport_name, transport_gstin, bill_month, bill_year, "
@@ -79,7 +81,7 @@ def _resolve_gr_metadata(sb, gr_nos: list[str]) -> tuple[list[dict], list[str], 
     for chunk in _chunks(gr_nos, 200):
         res = (
             sb.table("bilty_wise_kaat")
-            .select("gr_no, bilty_number, kaat, pf")
+            .select(KAAT_SELECT + ", bilty_number")
             .in_("gr_no", chunk)
             .execute()
         )
@@ -91,7 +93,7 @@ def _resolve_gr_metadata(sb, gr_nos: list[str]) -> tuple[list[dict], list[str], 
     for chunk in _chunks(gr_nos, 200):
         res = (
             sb.table("bilty")
-            .select("gr_no, bilty_image, total, consignor_name, consignee_name, to_city_id, bilty_date, payment_mode")
+            .select("gr_no, bilty_image, total, consignor_name, consignee_name, to_city_id, bilty_date, payment_mode, wt, no_of_pkg")
             .in_("gr_no", chunk)
             .eq("is_active", True)
             .execute()
@@ -106,7 +108,7 @@ def _resolve_gr_metadata(sb, gr_nos: list[str]) -> tuple[list[dict], list[str], 
         for chunk in _chunks(missing, 200):
             res = (
                 sb.table("station_bilty_summary")
-                .select("gr_no, transit_bilty_image, amount, consignor, consignee, city_id, created_at, payment_status")
+                .select("gr_no, transit_bilty_image, amount, consignor, consignee, city_id, created_at, payment_status, weight, no_of_packets")
                 .in_("gr_no", chunk)
                 .execute()
             )
@@ -162,6 +164,11 @@ def _resolve_gr_metadata(sb, gr_nos: list[str]) -> tuple[list[dict], list[str], 
             "consignee_name": (b.get("consignee_name") if b else (s.get("consignee") if s else None)),
             "destination": city_name_map.get(city_id, ""),
             "source_table": "bilty" if b else ("station_bilty_summary" if s else None),
+            # rate type, rate, bilty / labour / ewb / other charge, dd, weight, packages
+            "kaat_detail": kaat_detail(k, {
+                "weight": float((b.get("wt") if b else (s.get("weight") if s else 0)) or 0),
+                "packages": float((b.get("no_of_pkg") if b else (s.get("no_of_packets") if s else 0)) or 0),
+                "total": round(amount, 2), "payment_mode": payment_mode} if (b or s) else None),
         })
 
     return metadata, unmatched_gr, no_kaat_gr
@@ -353,23 +360,16 @@ def update_bilty_crossing_bill(bill_id: str, data: dict) -> dict:
 
 def update_gr_kaat_pf(bill_id: str, gr_no: str, data: dict) -> dict:
     """
-    Edit kaat and/or pf for ONE gr_no that's already on this bill — THE
-    fix for not being able to edit pf. Updates BOTH places kaat/pf live:
-      1. bilty_wise_kaat.kaat / .pf — the source of truth everywhere else
-         in the system (kaat bill reports, pohonch, etc. all read from here)
-      2. this bill's own metadata[] entry for that gr_no — so the bill
-         you're looking at reflects the edit immediately, not just the
-         underlying table
-    Then recomputes total_kaat, total_pf, total_paid_kaat, total_amount
-    from the updated metadata and saves them on the bill.
-
-    data = { kaat?, pf?, updated_by? } — at least one of kaat/pf required.
-    'amount' is NOT touched here — it's the bilty's real freight total,
-    independent of kaat/pf (see _resolve_gr_metadata for why).
+    Edit one GR that's already on this bill. Body (all optional, at least one):
+      rate_type ('per_kg' | 'per_pkg'), kaat_rate (rate for that type), rate_per_kg, rate_per_pkg,
+      bilty_chrg, labour_chrg, labour_per_pkg, ewb_chrg, other_chrg, kaat_dd,
+      kaat (typed kaat, wins over the formula), pf (typed pf, wins), updated_by.
+    kaat = (weight x rate_per_kg | packages x rate_per_pkg) + bilty + labour + ewb + other
+    pf   = total - kaat - dd  (paid bilty: -kaat)
+    Updates bilty_wise_kaat (source of truth) + pohonch, then this bill's metadata[] and totals.
+    'amount' (the bilty freight) is never touched.
     """
-    if "kaat" not in (data or {}) and "pf" not in (data or {}):
-        return {"status": "error", "message": "At least one of kaat or pf is required", "status_code": 400}
-
+    data = data or {}
     sb = get_supabase()
     bill_res = sb.table("bilty_crossing_bill").select(BILL_COLS).eq("id", bill_id).execute().data
     if not bill_res:
@@ -381,28 +381,26 @@ def update_gr_kaat_pf(bill_id: str, gr_no: str, data: dict) -> dict:
     if idx is None:
         return {"status": "error", "message": f"GR '{gr_no}' is not on bill {bill['bill_no']}", "status_code": 404}
 
-    kaat_payload = {}
-    if "kaat" in data:
-        new_kaat = round(float(data["kaat"] or 0), 2)
-        metadata[idx]["kaat"] = new_kaat
-        kaat_payload["kaat"] = new_kaat
-    if "pf" in data:
-        new_pf = round(float(data["pf"] or 0), 2)
-        metadata[idx]["pf"] = new_pf
-        kaat_payload["pf"] = new_pf
+    row = (sb.table("bilty_wise_kaat").select(KAAT_SELECT).eq("gr_no", gr_no).limit(1).execute().data or [None])[0]
+    info = fetch_gr_info(sb, gr_no)
+    try:
+        payload, breakdown = compute_kaat(row, info, data)
+    except ValueError as e:
+        return {"status": "error", "message": str(e), "status_code": 400}
 
-    # 1. bilty_wise_kaat — the system-wide source of truth
-    if kaat_payload:
-        kw_existing = sb.table("bilty_wise_kaat").select("id").eq("gr_no", gr_no).execute().data
-        if kw_existing:
-            sb.table("bilty_wise_kaat").update(kaat_payload).eq("gr_no", gr_no).execute()
-        # If there's no bilty_wise_kaat row at all for this GR yet (the
-        # "no_kaat_data_gr_nos" warning case from create), this backend
-        # never inserts kaat rows out of band (same convention as
-        # kaat_update_service) — the edit still lands on the bill's own
-        # metadata below, just not mirrored to a table row that doesn't exist.
+    # 1. bilty_wise_kaat — the system-wide source of truth. A GR with no kaat row
+    #    (create's "no_kaat_data" warning) only changes on this bill, as before.
+    if row:
+        if data.get("updated_by"):
+            payload["updated_by"] = data["updated_by"]
+        sb.table("bilty_wise_kaat").update(payload).eq("gr_no", gr_no).execute()
+        _sync_pohonch_metadata(sb, [{"gr_no": gr_no, "kaat": payload["kaat"], "pf": payload["pf"],
+                                     "kaat_rate": breakdown["rate"], "kaat_dd": payload["dd_chrg"]}])
 
-    # 2. recompute this bill's totals from the now-updated metadata
+    # 2. this bill's metadata entry + totals
+    metadata[idx]["kaat"] = payload["kaat"]
+    metadata[idx]["pf"] = payload["pf"]
+    metadata[idx]["kaat_detail"] = {k: v for k, v in breakdown.items() if k != "formula"}
     total_kaat = round(sum(float(m.get("kaat") or 0) for m in metadata), 2)
     total_pf = round(sum(float(m.get("pf") or 0) for m in metadata), 2)
     total_amount = round(sum(float(m.get("amount") or 0) for m in metadata), 2)
@@ -420,6 +418,7 @@ def update_gr_kaat_pf(bill_id: str, gr_no: str, data: dict) -> dict:
     res = sb.table("bilty_crossing_bill").update(update_payload).eq("id", bill_id).execute()
     updated = (res.data or [None])[0]
     return {"status": "success", "message": f"GR {gr_no} updated on bill {bill['bill_no']}",
+            "gr": {**metadata[idx], "formula": breakdown["formula"]},
             "data": _with_net_payable(updated)}
 
 

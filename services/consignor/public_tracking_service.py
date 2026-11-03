@@ -63,14 +63,12 @@ def get_public_consignor_bilties(consignor_gst: str, from_date: str | None = Non
     gst = (consignor_gst or "").strip().upper()
     if not _GSTIN.match(gst):
         return _err("A valid consignor GSTIN is required")
-    page, page_size = max(1, int(page or 1)), min(max(1, int(page_size or 20)), 50)
-    full = get_consignor_bilties(gst, None, from_date, to_date, page, page_size)
+    page, page_size = max(1, int(page or 1)), min(max(1, int(page_size or 20)), 200)
+    full = get_consignor_bilties(gst, None, from_date, to_date, page, page_size, gr_no)
     if full.get("status") != "success":
         return full
     d = full["data"]
     rows = d["rows"]
-    if gr_no:
-        rows = [r for r in rows if r["gr_no"].upper() == gr_no.strip().upper()]
 
     sb = get_supabase()
     grs = [r["gr_no"] for r in rows]
@@ -125,8 +123,8 @@ def get_public_consignor_bilties(consignor_gst: str, from_date: str | None = Non
         })
     return {"status": "success", "data": {
         "consignor_gst": gst, "consignor_name": d.get("consignor_name"),
-        "total": d["total"] if not gr_no else len(out), "page": d["page"], "page_size": d["page_size"],
-        "has_more": d["has_more"] if not gr_no else False, "rows": out,
+        "total": d["total"], "page": d["page"], "page_size": d["page_size"],
+        "has_more": d["has_more"], "rows": out,
         "complaint_categories": [{"code": k, "label": v} for k, v in CATEGORIES.items()],
     }}
 
