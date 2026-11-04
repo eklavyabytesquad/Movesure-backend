@@ -3,7 +3,7 @@ Challan Service
 Create challans, list, dispatch, hub receipt.
 Auto-generates challan numbers from challan_books.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from services.supabase_client import get_supabase
 
 CHALLAN_COLS = (
@@ -400,5 +400,119 @@ def get_challan_init(branch_id: str) -> dict:
                 "station_count": len(station),
             },
         }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── UNDO HUB RECEIVED ─────────────────────────────────────────
+
+def undo_hub_received(challan_id: str, user_id: str = None) -> dict:
+    """Reverse 'received at hub'. Blocked while any of its bilties are in a transport
+    ledger (those vouchers were posted because the challan was received)."""
+    try:
+        sb = get_supabase()
+        rows = sb.table("challan_details").select(
+            "id, challan_no, is_dispatched, is_received_at_hub"
+        ).eq("id", challan_id).limit(1).execute().data
+        if not rows:
+            return {"status": "error", "message": "Challan not found", "status_code": 404}
+        ch = rows[0]
+        if not ch.get("is_received_at_hub"):
+            return {"status": "error", "message": "Challan is not received at hub", "status_code": 400}
+
+        try:
+            linked = sb.table("transport_ledger_bilties").select("gr_no", count="exact") \
+                .eq("challan_no", ch["challan_no"]).eq("is_active", True).limit(5).execute()
+            if linked.count:
+                sample = ", ".join(r["gr_no"] for r in linked.data or [])
+                return {"status": "error", "status_code": 409,
+                        "message": f"Cannot undo — {linked.count} bilties of challan {ch['challan_no']} are already "
+                                   f"in transport ledgers ({sample}…). Remove them from the transport ledger first."}
+        except Exception:
+            pass   # transport ledger tables not installed — nothing to protect
+
+        resp = sb.table("challan_details").update({
+            "is_received_at_hub": False,
+            "received_at_hub_timing": None,
+            "received_by_user": None,
+            "updated_at": _now(),
+        }).eq("id", challan_id).execute()
+        return {"status": "success", "data": resp.data[0] if resp.data else None,
+                "message": "Hub receiving undone — challan is back to dispatched"}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "status_code": 500}
+
+
+# ── EDIT DISPATCH / RECEIVED DATES ────────────────────────────
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _parse_dt(value, field: str) -> datetime:
+    """Accepts ISO with or without time/zone: '2026-11-03', '2026-11-03T14:30', '2026-11-03T14:30:00+05:30'.
+    No zone given = India time (what a datetime-local input sends)."""
+    s = str(value).strip().replace(" ", "T")
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        raise ValueError(f"{field} must be a date/time like 2026-11-03T14:30")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_IST)
+    return dt
+
+
+def update_challan_dates(challan_id: str, data: dict) -> dict:
+    """data = { dispatch_date?, received_at_hub_timing?, user_id? } — at least one date.
+    dispatch_date only on a dispatched challan, received_at_hub_timing only on a received one;
+    received can't be before dispatch, and neither can be in the future."""
+    data = data or {}
+    want_d = data.get("dispatch_date") not in (None, "")
+    want_r = data.get("received_at_hub_timing") not in (None, "")
+    if not want_d and not want_r:
+        return {"status": "error", "message": "Send dispatch_date and/or received_at_hub_timing", "status_code": 400}
+    try:
+        sb = get_supabase()
+        rows = sb.table("challan_details").select(
+            "id, challan_no, date, is_dispatched, dispatch_date, is_received_at_hub, received_at_hub_timing"
+        ).eq("id", challan_id).limit(1).execute().data
+        if not rows:
+            return {"status": "error", "message": "Challan not found", "status_code": 404}
+        ch = rows[0]
+        try:
+            new_d = _parse_dt(data["dispatch_date"], "dispatch_date") if want_d else None
+            new_r = _parse_dt(data["received_at_hub_timing"], "received_at_hub_timing") if want_r else None
+        except ValueError as e:
+            return {"status": "error", "message": str(e), "status_code": 400}
+
+        if want_d and not ch.get("is_dispatched"):
+            return {"status": "error", "message": "Challan is not dispatched — dispatch it first", "status_code": 400}
+        if want_r and not ch.get("is_received_at_hub"):
+            return {"status": "error", "message": "Challan is not received at hub — receive it first", "status_code": 400}
+
+        now = datetime.now(timezone.utc) + timedelta(minutes=5)
+        for dt, name in ((new_d, "dispatch_date"), (new_r, "received_at_hub_timing")):
+            if dt and dt > now:
+                return {"status": "error", "message": f"{name} cannot be in the future", "status_code": 400}
+
+        eff_d = new_d or (_parse_dt(ch["dispatch_date"], "dispatch_date") if ch.get("dispatch_date") else None)
+        eff_r = new_r or (_parse_dt(ch["received_at_hub_timing"], "received_at_hub_timing")
+                          if ch.get("received_at_hub_timing") else None)
+        if eff_d and eff_r and eff_r < eff_d:
+            return {"status": "error", "message": "Received date cannot be before the dispatch date", "status_code": 400}
+        if eff_d and ch.get("date") and eff_d.astimezone(_IST).date().isoformat() < str(ch["date"])[:10]:
+            return {"status": "error", "message": f"Dispatch date cannot be before the challan date ({ch['date']})",
+                    "status_code": 400}
+
+        upd = {"updated_at": _now()}
+        if new_d:
+            upd["dispatch_date"] = new_d.astimezone(timezone.utc).isoformat()
+        if new_r:
+            upd["received_at_hub_timing"] = new_r.astimezone(timezone.utc).isoformat()
+        resp = sb.table("challan_details").update(upd).eq("id", challan_id).execute()
+        return {"status": "success", "data": resp.data[0] if resp.data else None,
+                "message": "Challan dates updated",
+                "changed": {k: {"old": ch.get(k), "new": upd[k]} for k in ("dispatch_date", "received_at_hub_timing") if k in upd}}
     except Exception as e:
         return {"status": "error", "message": str(e), "status_code": 500}

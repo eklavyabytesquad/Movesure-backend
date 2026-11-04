@@ -107,6 +107,7 @@ from services.challan.challan_book_service import (
 from services.challan.challan_service import (
     list_challans, get_challan, create_challan, update_challan,
     dispatch_challan, undispatch_challan, mark_hub_received, delete_challan,
+    undo_hub_received, update_challan_dates,
     get_challan_init,
 )
 from services.challan.transit_service import (
@@ -2215,6 +2216,26 @@ async def challan_hub_received(request: Request, challan_id: str = Path(...)):
         data = await request.json()
         result = await _run(mark_hub_received, challan_id, data.get("user_id"))
         return _response(result)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/challan/{challan_id}/undo-hub-received")
+async def challan_undo_hub_received(request: Request, challan_id: str = Path(...)):
+    """Reverse 'received at hub' (back to dispatched). Blocked (409) while its bilties are in a transport ledger."""
+    try:
+        data = await request.json() if await request.body() else {}
+        return _response(await _run(undo_hub_received, challan_id, data.get("user_id")))
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.patch("/api/challan/{challan_id}/dates")
+async def challan_update_dates(request: Request, challan_id: str = Path(...)):
+    """Edit dispatch_date and/or received_at_hub_timing. Body: { dispatch_date?, received_at_hub_timing?, user_id? }"""
+    try:
+        data = await request.json() if await request.body() else {}
+        return _response(await _run(update_challan_dates, challan_id, data))
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
